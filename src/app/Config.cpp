@@ -47,6 +47,16 @@ Config Config::Load() {
         config.enabled = j.value("enabled", config.enabled);
         config.passthrough = j.value("passthrough", config.passthrough);
         config.fitToMonitor = j.value("fitToMonitor", config.fitToMonitor);
+        config.fxaa = j.value("fxaa", config.fxaa);
+        config.debandStrength = j.value("debandStrength", config.debandStrength);
+        config.vibrance = j.value("vibrance", config.vibrance);
+        config.saturation = j.value("saturation", config.saturation);
+        config.contrast = j.value("contrast", config.contrast);
+        config.gamma = j.value("gamma", config.gamma);
+        config.exposure = j.value("exposure", config.exposure);
+        config.filmic = j.value("filmic", config.filmic);
+        config.vignette = j.value("vignette", config.vignette);
+        config.grain = j.value("grain", config.grain);
     } catch (...) {
         // malformed config — fall back to defaults
     }
@@ -60,6 +70,16 @@ void Config::Save() const {
         {"enabled", enabled},
         {"passthrough", passthrough},
         {"fitToMonitor", fitToMonitor},
+        {"fxaa", fxaa},
+        {"debandStrength", debandStrength},
+        {"vibrance", vibrance},
+        {"saturation", saturation},
+        {"contrast", contrast},
+        {"gamma", gamma},
+        {"exposure", exposure},
+        {"filmic", filmic},
+        {"vignette", vignette},
+        {"grain", grain},
     };
     std::ofstream file(ConfigPath());
     if (file) file << j.dump(2);

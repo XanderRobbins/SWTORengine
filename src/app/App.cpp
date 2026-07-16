@@ -277,10 +277,8 @@ void App::OnFrame(ID3D11Texture2D* frame, UINT contentW, UINT contentH) {
     const UINT outH = presenter_.Height();
     if (!outW || !outH) return;
 
-    ID3D11Texture2D* processed = pipeline_.Process(
-        d3d_.Context(), frame, contentW, contentH, outW, outH, config_.sharpness,
-        config_.passthrough ? gpu::ShaderPipeline::Mode::Passthrough
-                            : gpu::ShaderPipeline::Mode::FSR);
+    ID3D11Texture2D* processed = pipeline_.Process(d3d_.Context(), frame, contentW, contentH,
+                                                   outW, outH, BuildProcessParams());
     if (!processed) return;
 
     presenter_.PresentFrame(d3d_.Context(), processed);
@@ -298,6 +296,25 @@ void App::OnFrame(ID3D11Texture2D* frame, UINT contentW, UINT contentH) {
         statFrames_ = 0;
         statWindowStart_ = t1.QuadPart;
     }
+}
+
+gpu::ShaderPipeline::ProcessParams App::BuildProcessParams() {
+    gpu::ShaderPipeline::ProcessParams params;
+    params.mode = config_.passthrough ? gpu::ShaderPipeline::Mode::Passthrough
+                                      : gpu::ShaderPipeline::Mode::FSR;
+    params.sharpness = config_.sharpness;
+    params.fxaa = config_.fxaa;
+    params.debandStrength = config_.debandStrength;
+    params.vibrance = config_.vibrance;
+    params.saturation = config_.saturation;
+    params.contrast = config_.contrast;
+    params.gamma = config_.gamma;
+    params.exposure = config_.exposure;
+    params.filmic = config_.filmic;
+    params.vignette = config_.vignette;
+    params.grain = config_.grain;
+    params.frameIndex = frameCounter_++;
+    return params;
 }
 
 bool App::PresenterShouldShow() const {
@@ -385,9 +402,8 @@ void App::HandleTestCaptureFrame(ID3D11Texture2D* frame, UINT w, UINT h) {
 
     // Process at 1.5x to exercise a real EASU upscale, then dump.
     bool fsrOk = false;
-    ID3D11Texture2D* processed =
-        pipeline_.Process(d3d_.Context(), frame, w, h, w * 3 / 2, h * 3 / 2, 0.25f,
-                          gpu::ShaderPipeline::Mode::FSR);
+    ID3D11Texture2D* processed = pipeline_.Process(d3d_.Context(), frame, w, h, w * 3 / 2,
+                                                   h * 3 / 2, BuildProcessParams());
     if (processed) {
         fsrOk = util::SaveTexturePng(d3d_.Device(), d3d_.Context(), processed,
                                      dir + L"capture_fsr.png");

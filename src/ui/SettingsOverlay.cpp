@@ -163,10 +163,44 @@ void SettingsOverlay::Render(const Stats& stats) {
 
     // --- Processing controls ---
     changed |= ImGui::Checkbox("Enabled", &config_->enabled);
-    changed |= ImGui::SliderFloat("Sharpness (stops, 0 = max)", &config_->sharpness, 0.0f, 2.0f);
-    changed |= ImGui::Checkbox("Passthrough (debug, bilinear only)", &config_->passthrough);
     changed |= ImGui::Checkbox("Fit presenter to monitor (upscale to full screen)",
                                &config_->fitToMonitor);
+
+    if (ImGui::CollapsingHeader("Sharpness & Anti-aliasing", ImGuiTreeNodeFlags_DefaultOpen)) {
+        changed |= ImGui::SliderFloat("Sharpness (stops, 0 = max)", &config_->sharpness,
+                                      0.0f, 2.0f);
+        changed |= ImGui::Checkbox("FXAA (smooth jagged edges)", &config_->fxaa);
+        changed |= ImGui::SliderFloat("Deband (smooth sky/fog gradients)",
+                                      &config_->debandStrength, 0.0f, 3.0f);
+    }
+
+    if (ImGui::CollapsingHeader("Color", ImGuiTreeNodeFlags_DefaultOpen)) {
+        changed |= ImGui::SliderFloat("Vibrance", &config_->vibrance, -1.0f, 1.0f);
+        changed |= ImGui::SliderFloat("Saturation", &config_->saturation, 0.0f, 2.0f);
+        changed |= ImGui::SliderFloat("Contrast", &config_->contrast, 0.5f, 1.5f);
+        changed |= ImGui::SliderFloat("Gamma", &config_->gamma, 0.5f, 2.0f);
+        changed |= ImGui::SliderFloat("Exposure (stops)", &config_->exposure, -1.0f, 1.0f);
+        changed |= ImGui::SliderFloat("Filmic tone", &config_->filmic, 0.0f, 1.0f);
+        if (ImGui::Button("Reset colors")) {
+            config_->vibrance = 0.0f;
+            config_->saturation = 1.0f;
+            config_->contrast = 1.0f;
+            config_->gamma = 1.0f;
+            config_->exposure = 0.0f;
+            config_->filmic = 0.0f;
+            changed = true;
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Cinematic extras")) {
+        changed |= ImGui::SliderFloat("Vignette", &config_->vignette, 0.0f, 1.0f);
+        changed |= ImGui::SliderFloat("Film grain", &config_->grain, 0.0f, 1.0f);
+    }
+
+    if (ImGui::CollapsingHeader("Debug")) {
+        changed |= ImGui::Checkbox("Passthrough (bilinear only, no enhancement)",
+                                   &config_->passthrough);
+    }
     ImGui::Separator();
 
     // --- Target picker ---

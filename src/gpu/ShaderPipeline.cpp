@@ -14,6 +14,11 @@ namespace gpu {
 
 namespace {
 
+struct FxaaConstants {
+    float texW, texH;
+    float viewportW, viewportH;
+};
+
 struct EasuConstants {
     AU1 con0[4];
     AU1 con1[4];
@@ -23,6 +28,12 @@ struct EasuConstants {
 
 struct RcasConstants {
     AU1 con[4];
+};
+
+struct PostConstants {
+    float vibrance, saturation, contrast, gamma;
+    float exposure, filmic, vignette, grain;
+    float debandStrength, frameIndex, outW, outH;
 };
 
 struct PassthroughConstants {
@@ -40,14 +51,37 @@ winrt::com_ptr<ID3D11Buffer> MakeConstantBuffer(ID3D11Device* device, UINT bytes
     return buffer;
 }
 
+bool MakeUAVTexture(ID3D11Device* device, UINT w, UINT h, winrt::com_ptr<ID3D11Texture2D>& tex,
+                    winrt::com_ptr<ID3D11UnorderedAccessView>* uav,
+                    winrt::com_ptr<ID3D11ShaderResourceView>* srv) {
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = w;
+    desc.Height = h;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // guaranteed typed-UAV-store format
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+
+    if (FAILED(device->CreateTexture2D(&desc, nullptr, tex.put()))) return false;
+    if (uav && FAILED(device->CreateUnorderedAccessView(tex.get(), nullptr, uav->put())))
+        return false;
+    if (srv && FAILED(device->CreateShaderResourceView(tex.get(), nullptr, srv->put())))
+        return false;
+    return true;
+}
+
 } // namespace
 
 bool ShaderPipeline::Init(ID3D11Device* device, const std::wstring& shaderDir,
                           std::wstring* error) {
     device_.copy_from(device);
 
+    if (!CompileCS(shaderDir + L"fxaa.hlsl", fxaaCS_, error)) return false;
     if (!CompileCS(shaderDir + L"fsr1_easu.hlsl", easuCS_, error)) return false;
     if (!CompileCS(shaderDir + L"fsr1_rcas.hlsl", rcasCS_, error)) return false;
+    if (!CompileCS(shaderDir + L"post_grade.hlsl", postCS_, error)) return false;
     if (!CompileCS(shaderDir + L"passthrough.hlsl", passthroughCS_, error)) return false;
 
     D3D11_SAMPLER_DESC sampler{};
@@ -57,10 +91,12 @@ bool ShaderPipeline::Init(ID3D11Device* device, const std::wstring& shaderDir,
     sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     if (FAILED(device_->CreateSamplerState(&sampler, linearClamp_.put()))) return false;
 
+    cbFxaa_ = MakeConstantBuffer(device_.get(), sizeof(FxaaConstants));
     cbEasu_ = MakeConstantBuffer(device_.get(), sizeof(EasuConstants));
     cbRcas_ = MakeConstantBuffer(device_.get(), sizeof(RcasConstants));
+    cbPost_ = MakeConstantBuffer(device_.get(), sizeof(PostConstants));
     cbPassthrough_ = MakeConstantBuffer(device_.get(), sizeof(PassthroughConstants));
-    return cbEasu_ && cbRcas_ && cbPassthrough_;
+    return cbFxaa_ && cbEasu_ && cbRcas_ && cbPost_ && cbPassthrough_;
 }
 
 bool ShaderPipeline::CompileCS(const std::wstring& path,
@@ -85,27 +121,25 @@ bool ShaderPipeline::CompileCS(const std::wstring& path,
                                                   nullptr, out.put()));
 }
 
+bool ShaderPipeline::EnsurePreTexture(UINT w, UINT h) {
+    if (w == preW_ && h == preH_ && pre_) return true;
+    pre_ = nullptr; preUAV_ = nullptr; preSRV_ = nullptr;
+    if (!MakeUAVTexture(device_.get(), w, h, pre_, &preUAV_, &preSRV_)) return false;
+    preW_ = w;
+    preH_ = h;
+    return true;
+}
+
 bool ShaderPipeline::EnsureOutputTextures(UINT outW, UINT outH) {
     if (outW == outW_ && outH == outH_ && out_) return true;
 
     mid_ = nullptr; midUAV_ = nullptr; midSRV_ = nullptr;
-    out_ = nullptr; outUAV_ = nullptr;
+    out_ = nullptr; outUAV_ = nullptr; outSRV_ = nullptr;
+    post_ = nullptr; postUAV_ = nullptr;
 
-    D3D11_TEXTURE2D_DESC desc{};
-    desc.Width = outW;
-    desc.Height = outH;
-    desc.MipLevels = 1;
-    desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // guaranteed typed-UAV-store format
-    desc.SampleDesc.Count = 1;
-    desc.Usage = D3D11_USAGE_DEFAULT;
-    desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-
-    if (FAILED(device_->CreateTexture2D(&desc, nullptr, mid_.put()))) return false;
-    if (FAILED(device_->CreateTexture2D(&desc, nullptr, out_.put()))) return false;
-    if (FAILED(device_->CreateUnorderedAccessView(mid_.get(), nullptr, midUAV_.put()))) return false;
-    if (FAILED(device_->CreateShaderResourceView(mid_.get(), nullptr, midSRV_.put()))) return false;
-    if (FAILED(device_->CreateUnorderedAccessView(out_.get(), nullptr, outUAV_.put()))) return false;
+    if (!MakeUAVTexture(device_.get(), outW, outH, mid_, &midUAV_, &midSRV_)) return false;
+    if (!MakeUAVTexture(device_.get(), outW, outH, out_, &outUAV_, &outSRV_)) return false;
+    if (!MakeUAVTexture(device_.get(), outW, outH, post_, &postUAV_, nullptr)) return false;
 
     outW_ = outW;
     outH_ = outH;
@@ -123,9 +157,27 @@ ID3D11ShaderResourceView* ShaderPipeline::GetInputSRV(ID3D11Texture2D* input) {
     return cachedInputSRV_.get();
 }
 
+void ShaderPipeline::DispatchPass(ID3D11DeviceContext* ctx, ID3D11ComputeShader* cs,
+                                  ID3D11Buffer* cb, ID3D11ShaderResourceView* srv,
+                                  ID3D11UnorderedAccessView* uav, UINT groupsX, UINT groupsY) {
+    ID3D11Buffer* cbs[] = {cb};
+    ID3D11ShaderResourceView* srvs[] = {srv};
+    ID3D11UnorderedAccessView* uavs[] = {uav};
+    ID3D11ShaderResourceView* nullSRV[] = {nullptr};
+    ID3D11UnorderedAccessView* nullUAV[] = {nullptr};
+
+    ctx->CSSetShader(cs, nullptr, 0);
+    ctx->CSSetConstantBuffers(0, 1, cbs);
+    ctx->CSSetShaderResources(0, 1, srvs);
+    ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
+    ctx->Dispatch(groupsX, groupsY, 1);
+    ctx->CSSetShaderResources(0, 1, nullSRV);
+    ctx->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
+}
+
 ID3D11Texture2D* ShaderPipeline::Process(ID3D11DeviceContext* ctx, ID3D11Texture2D* input,
                                          UINT viewportW, UINT viewportH, UINT outW, UINT outH,
-                                         float sharpnessStops, Mode mode) {
+                                         const ProcessParams& params) {
     if (!input || !outW || !outH || !viewportW || !viewportH) return nullptr;
     if (!EnsureOutputTextures(outW, outH)) return nullptr;
 
@@ -138,71 +190,64 @@ ID3D11Texture2D* ShaderPipeline::Process(ID3D11DeviceContext* ctx, ID3D11Texture
     ID3D11SamplerState* samplers[] = {linearClamp_.get()};
     ctx->CSSetSamplers(0, 1, samplers);
 
-    ID3D11ShaderResourceView* nullSRV[] = {nullptr};
-    ID3D11UnorderedAccessView* nullUAV[] = {nullptr};
-
-    if (mode == Mode::Passthrough) {
+    if (params.mode == Mode::Passthrough) {
         PassthroughConstants pc{outW, outH,
                                 static_cast<float>(viewportW) / inputDesc.Width,
                                 static_cast<float>(viewportH) / inputDesc.Height};
         ctx->UpdateSubresource(cbPassthrough_.get(), 0, nullptr, &pc, 0, 0);
-
-        ID3D11Buffer* cbs[] = {cbPassthrough_.get()};
-        ID3D11ShaderResourceView* srvs[] = {inputSRV};
-        ID3D11UnorderedAccessView* uavs[] = {outUAV_.get()};
-        ctx->CSSetShader(passthroughCS_.get(), nullptr, 0);
-        ctx->CSSetConstantBuffers(0, 1, cbs);
-        ctx->CSSetShaderResources(0, 1, srvs);
-        ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-        ctx->Dispatch((outW + 7) / 8, (outH + 7) / 8, 1);
-        ctx->CSSetShaderResources(0, 1, nullSRV);
-        ctx->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
+        DispatchPass(ctx, passthroughCS_.get(), cbPassthrough_.get(), inputSRV, outUAV_.get(),
+                     (outW + 7) / 8, (outH + 7) / 8);
         return out_.get();
     }
 
-    // --- EASU: spatial upscale input viewport -> output resolution ---
+    // --- FXAA at capture resolution (FSR wants anti-aliased input) ---
+    ID3D11ShaderResourceView* easuInput = inputSRV;
+    float easuTexW = static_cast<float>(inputDesc.Width);
+    float easuTexH = static_cast<float>(inputDesc.Height);
+    if (params.fxaa) {
+        if (!EnsurePreTexture(viewportW, viewportH)) return nullptr;
+        FxaaConstants fc{static_cast<float>(inputDesc.Width), static_cast<float>(inputDesc.Height),
+                         static_cast<float>(viewportW), static_cast<float>(viewportH)};
+        ctx->UpdateSubresource(cbFxaa_.get(), 0, nullptr, &fc, 0, 0);
+        DispatchPass(ctx, fxaaCS_.get(), cbFxaa_.get(), inputSRV, preUAV_.get(),
+                     (viewportW + 7) / 8, (viewportH + 7) / 8);
+        easuInput = preSRV_.get();
+        easuTexW = static_cast<float>(viewportW);
+        easuTexH = static_cast<float>(viewportH);
+    }
+
+    // --- EASU: spatial upscale viewport -> output resolution ---
     EasuConstants easu{};
     FsrEasuCon(easu.con0, easu.con1, easu.con2, easu.con3,
                static_cast<AF1>(viewportW), static_cast<AF1>(viewportH),
-               static_cast<AF1>(inputDesc.Width), static_cast<AF1>(inputDesc.Height),
+               static_cast<AF1>(easuTexW), static_cast<AF1>(easuTexH),
                static_cast<AF1>(outW), static_cast<AF1>(outH));
     ctx->UpdateSubresource(cbEasu_.get(), 0, nullptr, &easu, 0, 0);
 
     const UINT groupsX = (outW + 15) / 16;
     const UINT groupsY = (outH + 15) / 16;
-
-    {
-        ID3D11Buffer* cbs[] = {cbEasu_.get()};
-        ID3D11ShaderResourceView* srvs[] = {inputSRV};
-        ID3D11UnorderedAccessView* uavs[] = {midUAV_.get()};
-        ctx->CSSetShader(easuCS_.get(), nullptr, 0);
-        ctx->CSSetConstantBuffers(0, 1, cbs);
-        ctx->CSSetShaderResources(0, 1, srvs);
-        ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-        ctx->Dispatch(groupsX, groupsY, 1);
-        ctx->CSSetShaderResources(0, 1, nullSRV);
-        ctx->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
-    }
+    DispatchPass(ctx, easuCS_.get(), cbEasu_.get(), easuInput, midUAV_.get(), groupsX, groupsY);
 
     // --- RCAS: sharpen at output resolution ---
     RcasConstants rcas{};
-    FsrRcasCon(rcas.con, sharpnessStops);
+    FsrRcasCon(rcas.con, params.sharpness);
     ctx->UpdateSubresource(cbRcas_.get(), 0, nullptr, &rcas, 0, 0);
+    DispatchPass(ctx, rcasCS_.get(), cbRcas_.get(), midSRV_.get(), outUAV_.get(), groupsX,
+                 groupsY);
 
-    {
-        ID3D11Buffer* cbs[] = {cbRcas_.get()};
-        ID3D11ShaderResourceView* srvs[] = {midSRV_.get()};
-        ID3D11UnorderedAccessView* uavs[] = {outUAV_.get()};
-        ctx->CSSetShader(rcasCS_.get(), nullptr, 0);
-        ctx->CSSetConstantBuffers(0, 1, cbs);
-        ctx->CSSetShaderResources(0, 1, srvs);
-        ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-        ctx->Dispatch(groupsX, groupsY, 1);
-        ctx->CSSetShaderResources(0, 1, nullSRV);
-        ctx->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
-    }
+    // --- Deband + color grade (skipped entirely when neutral) ---
+    if (!params.PostPassNeeded()) return out_.get();
 
-    return out_.get();
+    PostConstants post{params.vibrance,       params.saturation,
+                       params.contrast,       params.gamma,
+                       params.exposure,       params.filmic,
+                       params.vignette,       params.grain,
+                       params.debandStrength, static_cast<float>(params.frameIndex % 1024),
+                       static_cast<float>(outW), static_cast<float>(outH)};
+    ctx->UpdateSubresource(cbPost_.get(), 0, nullptr, &post, 0, 0);
+    DispatchPass(ctx, postCS_.get(), cbPost_.get(), outSRV_.get(), postUAV_.get(),
+                 (outW + 7) / 8, (outH + 7) / 8);
+    return post_.get();
 }
 
 } // namespace gpu

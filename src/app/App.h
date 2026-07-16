@@ -80,6 +80,9 @@ private:
     UINT statFrames_ = 0;
     LONGLONG statWindowStart_ = 0;
     UINT lastInW_ = 0, lastInH_ = 0;
+    UINT frameCounter_ = 0;
+
+    gpu::ShaderPipeline::ProcessParams BuildProcessParams();
 
     int testFramesSeen_ = 0;
     int exitCode_ = 0;
