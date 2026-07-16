@@ -245,7 +245,10 @@ void SettingsOverlay::Render(const Stats& stats) {
     d3d_->Context()->OMSetRenderTargets(1, rtvs, nullptr);
     d3d_->Context()->ClearRenderTargetView(rtv_.get(), clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-    swapchain_->Present(1, 0);
+    // No vsync wait: this render holds the GPU lock the frame worker needs,
+    // and blocking here until vblank throttles game-frame presentation.
+    // The ~60Hz UI timer paces the panel by itself.
+    swapchain_->Present(0, 0);
 
     ID3D11RenderTargetView* nullRTV[] = {nullptr};
     d3d_->Context()->OMSetRenderTargets(1, nullRTV, nullptr);

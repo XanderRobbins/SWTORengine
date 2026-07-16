@@ -73,10 +73,12 @@ bool D3DContext::Init() {
 
     auto dxgiDevice = device_.as<IDXGIDevice>();
 
-    // Cap the present queue at 1 frame — the default (3) lets DXGI buffer up
-    // to two extra frames of latency between our Present and the display.
+    // Cap the present queue (default 3 buffers extra latency). The budget is
+    // device-wide and two swapchains share it (presenter + settings panel);
+    // 1 makes them block on each other, so use 2. Flip-discard still shows
+    // only the newest frame at compose, so display latency stays minimal.
     if (auto dxgiDevice1 = device_.try_as<IDXGIDevice1>()) {
-        dxgiDevice1->SetMaximumFrameLatency(1);
+        dxgiDevice1->SetMaximumFrameLatency(2);
     }
 
     winrtDevice_ = util::CreateDirect3DDevice(dxgiDevice.get());
