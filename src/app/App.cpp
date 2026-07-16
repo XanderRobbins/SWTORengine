@@ -304,6 +304,7 @@ gpu::ShaderPipeline::ProcessParams App::BuildProcessParams() {
                                       : gpu::ShaderPipeline::Mode::FSR;
     params.sharpness = config_.sharpness;
     params.fxaa = config_.fxaa;
+    params.fxaaTextProtect = config_.fxaaTextProtect;
     params.debandStrength = config_.debandStrength;
     params.vibrance = config_.vibrance;
     params.saturation = config_.saturation;

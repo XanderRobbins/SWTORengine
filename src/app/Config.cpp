@@ -48,6 +48,7 @@ Config Config::Load() {
         config.passthrough = j.value("passthrough", config.passthrough);
         config.fitToMonitor = j.value("fitToMonitor", config.fitToMonitor);
         config.fxaa = j.value("fxaa", config.fxaa);
+        config.fxaaTextProtect = j.value("fxaaTextProtect", config.fxaaTextProtect);
         config.debandStrength = j.value("debandStrength", config.debandStrength);
         config.vibrance = j.value("vibrance", config.vibrance);
         config.saturation = j.value("saturation", config.saturation);
@@ -71,6 +72,7 @@ void Config::Save() const {
         {"passthrough", passthrough},
         {"fitToMonitor", fitToMonitor},
         {"fxaa", fxaa},
+        {"fxaaTextProtect", fxaaTextProtect},
         {"debandStrength", debandStrength},
         {"vibrance", vibrance},
         {"saturation", saturation},

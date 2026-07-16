@@ -12,8 +12,9 @@ struct Config {
 
     // Processing (neutral values disable the corresponding shader work)
     float sharpness = 0.25f;      // RCAS stops: 0 = max sharp, 2 = subtle
-    bool fxaa = true;             // post-AA before upscale
-    float debandStrength = 1.0f;  // 0 = off
+    bool fxaa = true;              // post-AA before upscale
+    float fxaaTextProtect = 0.75f; // 0..1, keep UI text crisp under FXAA
+    float debandStrength = 1.0f;   // 0 = off
     float vibrance = 0.15f;       // -1..1
     float saturation = 1.0f;      // 1 = neutral
     float contrast = 1.0f;        // 1 = neutral

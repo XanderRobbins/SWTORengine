@@ -17,6 +17,8 @@ namespace {
 struct FxaaConstants {
     float texW, texH;
     float viewportW, viewportH;
+    float textProtect;
+    float pad[3];
 };
 
 struct EasuConstants {
@@ -207,7 +209,8 @@ ID3D11Texture2D* ShaderPipeline::Process(ID3D11DeviceContext* ctx, ID3D11Texture
     if (params.fxaa) {
         if (!EnsurePreTexture(viewportW, viewportH)) return nullptr;
         FxaaConstants fc{static_cast<float>(inputDesc.Width), static_cast<float>(inputDesc.Height),
-                         static_cast<float>(viewportW), static_cast<float>(viewportH)};
+                         static_cast<float>(viewportW), static_cast<float>(viewportH),
+                         params.fxaaTextProtect, {}};
         ctx->UpdateSubresource(cbFxaa_.get(), 0, nullptr, &fc, 0, 0);
         DispatchPass(ctx, fxaaCS_.get(), cbFxaa_.get(), inputSRV, preUAV_.get(),
                      (viewportW + 7) / 8, (viewportH + 7) / 8);

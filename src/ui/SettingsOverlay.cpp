@@ -170,6 +170,10 @@ void SettingsOverlay::Render(const Stats& stats) {
         changed |= ImGui::SliderFloat("Sharpness (stops, 0 = max)", &config_->sharpness,
                                       0.0f, 2.0f);
         changed |= ImGui::Checkbox("FXAA (smooth jagged edges)", &config_->fxaa);
+        if (config_->fxaa) {
+            changed |= ImGui::SliderFloat("Text protection (keep UI text crisp)",
+                                          &config_->fxaaTextProtect, 0.0f, 1.0f);
+        }
         changed |= ImGui::SliderFloat("Deband (smooth sky/fog gradients)",
                                       &config_->debandStrength, 0.0f, 3.0f);
     }

@@ -19,7 +19,8 @@ public:
         Mode mode = Mode::FSR;
         float sharpness = 0.25f; // RCAS stops, 0 = max
         bool fxaa = true;
-        float debandStrength = 1.0f; // 0 = off
+        float fxaaTextProtect = 0.75f; // 0..1, keeps UI glyphs unfiltered
+        float debandStrength = 1.0f;   // 0 = off
         float vibrance = 0.0f;       // 0 neutral
         float saturation = 1.0f;     // 1 neutral
         float contrast = 1.0f;       // 1 neutral
