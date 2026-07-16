@@ -25,6 +25,17 @@ void RedirectStdoutToLogFile() {
     _wfreopen_s(&unused, log.c_str(), L"w", stdout);
 }
 
+// One live overlay at a time. RestartSelf() spawns the replacement while the
+// old process is still winding down, so on collision we wait for the mutex to
+// be released (or abandoned) instead of bailing immediately.
+bool ClaimSingleInstance() {
+    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\ChimeraOverlaySingleInstance");
+    if (!mutex) return true; // can't tell — don't refuse to run
+    if (GetLastError() != ERROR_ALREADY_EXISTS) return true;
+    const DWORD wait = WaitForSingleObject(mutex, 10000);
+    return wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
+}
+
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
@@ -51,10 +62,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     }
     LocalFree(argv);
 
-    if (!options.testCaptureTarget.empty() || !options.testFindTarget.empty() ||
-        !options.testRateTarget.empty()) {
-        RedirectStdoutToLogFile();
-    }
+    const bool testMode = !options.testCaptureTarget.empty() ||
+                          !options.testFindTarget.empty() || !options.testRateTarget.empty();
+    if (testMode) RedirectStdoutToLogFile();
+
+    // Test modes may run alongside a live overlay; only the real overlay is
+    // single-instance (startup copy + manual launch must not stack).
+    if (!testMode && !ClaimSingleInstance()) return 0;
 
     app::App application;
     return application.Run(hInstance, options);
