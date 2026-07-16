@@ -1,74 +1,58 @@
-// Phase 0 smoke test: verify the toolchain by opening and cleanly closing
-// a minimal Win32 window. Later phases replace this with the real app loop.
-//
-// Run with --smoke-test to auto-close after 2 seconds (exit code 0 on success),
-// so the exit criterion is verifiable without manual interaction.
+// Chimera Overlay — entry point.
+// Captures a target window via Windows.Graphics.Capture, enhances frames on
+// the GPU (FSR1 EASU + RCAS), and presents them in a click-through topmost
+// window pinned over the target. Never touches the target process.
 
 #include <windows.h>
+#include <shellapi.h>
+#include <cstdio>
 #include <string>
+
+#include "app/App.h"
 
 namespace {
 
-constexpr wchar_t kWindowClassName[] = L"ChimeraOverlayMainWindow";
-constexpr UINT_PTR kSmokeTestTimerId = 1;
-
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_TIMER:
-        if (wParam == kSmokeTestTimerId) {
-            DestroyWindow(hwnd);
-            return 0;
-        }
-        break;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
+// GUI-subsystem app: stdout goes nowhere useful, so --test-* modes log to a
+// file next to the exe where a script (or human) can read the results.
+void RedirectStdoutToLogFile() {
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring log(path);
+    size_t slash = log.find_last_of(L'\\');
+    if (slash != std::wstring::npos) log.resize(slash + 1);
+    log += L"chimera-test.log";
+    FILE* unused;
+    _wfreopen_s(&unused, log.c_str(), L"w", stdout);
 }
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR pCmdLine, int nCmdShow) {
-    const bool smokeTest =
-        pCmdLine && std::wstring(pCmdLine).find(L"--smoke-test") != std::wstring::npos;
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
+    // Must precede any window creation or rect math (Pitfalls: DPI scaling).
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    winrt::init_apartment(winrt::apartment_type::single_threaded);
 
-    WNDCLASSEXW wc{};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = hInstance;
-    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    wc.lpszClassName = kWindowClassName;
+    app::AppOptions options;
 
-    if (!RegisterClassExW(&wc)) {
-        return 1;
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring arg = argv[i];
+        auto nextArg = [&](std::wstring& out) {
+            if (i + 1 < argc) out = argv[++i];
+        };
+        if (arg == L"--smoke-test") options.smokeTest = true;
+        else if (arg == L"--test-capture") nextArg(options.testCaptureTarget);
+        else if (arg == L"--test-find") nextArg(options.testFindTarget);
+        else if (arg == L"--target") nextArg(options.targetOverride);
+        else if (arg == L"--outdir") nextArg(options.outDir);
+    }
+    LocalFree(argv);
+
+    if (!options.testCaptureTarget.empty() || !options.testFindTarget.empty()) {
+        RedirectStdoutToLogFile();
     }
 
-    HWND hwnd = CreateWindowExW(
-        0,
-        kWindowClassName,
-        L"Chimera Overlay (Phase 0)",
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
-        nullptr, nullptr, hInstance, nullptr);
-
-    if (!hwnd) {
-        return 1;
-    }
-
-    ShowWindow(hwnd, nCmdShow);
-    UpdateWindow(hwnd);
-
-    if (smokeTest) {
-        SetTimer(hwnd, kSmokeTestTimerId, 2000, nullptr);
-    }
-
-    MSG msg{};
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-
-    return static_cast<int>(msg.wParam);
+    app::App application;
+    return application.Run(hInstance, options);
 }
