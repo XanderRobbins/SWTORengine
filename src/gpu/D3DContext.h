@@ -3,6 +3,7 @@
 #include "../util/D3DHelpers.h"
 #include <d3d11.h>
 #include <dxgi1_3.h>
+#include <string>
 
 namespace gpu {
 
@@ -10,6 +11,9 @@ namespace gpu {
 class D3DContext {
 public:
     bool Init();
+
+    // Description of the adapter the device was created on (diagnostics).
+    const std::wstring& AdapterName() const { return adapterName_; }
 
     ID3D11Device* Device() const { return device_.get(); }
     ID3D11DeviceContext* Context() const { return context_.get(); }
@@ -25,6 +29,7 @@ private:
     winrt::com_ptr<ID3D11Device> device_;
     winrt::com_ptr<ID3D11DeviceContext> context_;
     winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice winrtDevice_{nullptr};
+    std::wstring adapterName_;
 };
 
 } // namespace gpu

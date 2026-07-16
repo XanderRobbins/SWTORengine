@@ -44,12 +44,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         if (arg == L"--smoke-test") options.smokeTest = true;
         else if (arg == L"--test-capture") nextArg(options.testCaptureTarget);
         else if (arg == L"--test-find") nextArg(options.testFindTarget);
+        else if (arg == L"--test-rate") nextArg(options.testRateTarget);
+        else if (arg == L"--test-rate-monitor") { nextArg(options.testRateTarget); options.testRateMonitor = true; }
         else if (arg == L"--target") nextArg(options.targetOverride);
         else if (arg == L"--outdir") nextArg(options.outDir);
     }
     LocalFree(argv);
 
-    if (!options.testCaptureTarget.empty() || !options.testFindTarget.empty()) {
+    if (!options.testCaptureTarget.empty() || !options.testFindTarget.empty() ||
+        !options.testRateTarget.empty()) {
         RedirectStdoutToLogFile();
     }
 

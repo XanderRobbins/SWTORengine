@@ -17,6 +17,11 @@ constexpr UINT_PTR kTimerSmokeTest = 3;
 constexpr int kHotkeySettings = 1; // Alt+Shift+O
 constexpr int kHotkeyBypass = 2;   // Alt+Shift+B
 
+// PostQuitMessage only works from the main thread; worker-thread code posts
+// these to the message window instead.
+constexpr UINT kMsgQuit = WM_APP + 1;         // wParam = exit code
+constexpr UINT kMsgSelectTarget = WM_APP + 2; // consume pendingTarget_
+
 App* g_app = nullptr; // single instance; wndproc trampoline
 
 std::wstring ExeDir() {
@@ -76,8 +81,11 @@ int App::Run(HINSTANCE instance, const AppOptions& options) {
         return MessageLoop();
     }
 
-    const bool testMode = !options_.testCaptureTarget.empty();
-    const std::wstring needle = testMode ? options_.testCaptureTarget : config_.targetTitle;
+    const bool testMode =
+        !options_.testCaptureTarget.empty() || !options_.testRateTarget.empty();
+    const std::wstring needle = !options_.testCaptureTarget.empty() ? options_.testCaptureTarget
+                                : !options_.testRateTarget.empty() ? options_.testRateTarget
+                                                                   : config_.targetTitle;
 
     if (!testMode) {
         hotkeys_.Register(msgWindow_, kHotkeySettings, MOD_ALT | MOD_SHIFT, 'O',
@@ -93,6 +101,10 @@ int App::Run(HINSTANCE instance, const AppOptions& options) {
     if (!AcquireTarget(needle) && testMode) {
         wprintf(L"test-capture: no window matching '%s'\n", needle.c_str());
         return 2;
+    }
+    if (testMode) {
+        wprintf(L"test: d3d adapter = %s\n", d3d_.AdapterName().c_str());
+        fflush(stdout);
     }
     if (testMode && capture_.IsActive()) {
         // Watchdog: fail instead of hanging if no frames ever arrive.
@@ -117,12 +129,17 @@ bool App::InitCore() {
 
     if (options_.testCaptureTarget.empty() && !options_.smokeTest) {
         if (!settings_.Init(instance_, d3d_, &config_)) return false;
+        // Deferred to the main thread: restarting capture tears down the
+        // session, which must not happen while the settings render holds the
+        // GPU lock (the frame worker could be blocked holding the session
+        // lock and waiting for the GPU lock — a deadlock cycle).
         settings_.onTargetSelected = [this](HWND hwnd) {
             wchar_t title[512]{};
             GetWindowTextW(hwnd, title, 512);
             config_.targetTitle = title;
             config_.Save();
-            StartCaptureOn(hwnd, title);
+            pendingTarget_ = hwnd;
+            PostMessageW(msgWindow_, kMsgSelectTarget, 0, 0);
         };
         settings_.onConfigChanged = [this] {
             config_.Save();
@@ -153,6 +170,17 @@ LRESULT CALLBACK App::MsgWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
 LRESULT App::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+    case kMsgQuit:
+        PostQuitMessage(static_cast<int>(wParam));
+        return 0;
+    case kMsgSelectTarget:
+        if (pendingTarget_ && IsWindow(pendingTarget_)) {
+            wchar_t title[512]{};
+            GetWindowTextW(pendingTarget_, title, 512);
+            StartCaptureOn(pendingTarget_, title);
+        }
+        pendingTarget_ = nullptr;
+        return 0;
     case WM_HOTKEY:
         if (hotkeys_.Dispatch(static_cast<int>(wParam))) return 0;
         break;
@@ -165,6 +193,12 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         case kTimerPoll:
             if (tracker_.IsAttached()) {
                 SyncPresenterRect();
+                // Window went fullscreen (or left it) — switch capture source.
+                if (capture_.IsActive() && capture_.ActiveSource() != DesiredSource()) {
+                    HWND target = tracker_.Target();
+                    std::wstring title = targetTitleLive_;
+                    StartCaptureOn(target, title);
+                }
             } else if (!config_.targetTitle.empty()) {
                 AcquireTarget(config_.targetTitle); // game may have (re)started
             }
@@ -174,6 +208,7 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 ui::SettingsOverlay::Stats stats;
                 stats.processMs = processMsEma_;
                 stats.fps = fps_;
+                stats.captureFps = captureFps_;
                 stats.inW = lastInW_;
                 stats.inH = lastInH_;
                 stats.outW = presenter_.Width();
@@ -182,6 +217,7 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 stats.bypassed = bypassed_;
                 stats.targetTitle = targetTitleLive_;
                 try {
+                    std::lock_guard<std::recursive_mutex> lock(gpuMutex_);
                     settings_.Render(stats);
                 } catch (...) {
                     RestartSelf();
@@ -227,8 +263,10 @@ void App::StartCaptureOn(HWND target, const std::wstring& title) {
     callbacks.onForegroundChanged = [this](HWND fg) { OnForegroundChanged(fg); };
     if (!tracker_.Attach(target, std::move(callbacks))) return;
 
+    capture::CaptureSession::Source source =
+        options_.testRateMonitor ? capture::CaptureSession::Source::Monitor : DesiredSource();
     if (!capture_.Start(
-            d3d_.WinRTDevice(), target,
+            d3d_.WinRTDevice(), target, source,
             [this](ID3D11Texture2D* frame, UINT w, UINT h) { OnFrame(frame, w, h); },
             [this] { OnTargetDestroyed(); })) {
         tracker_.Detach();
@@ -238,6 +276,23 @@ void App::StartCaptureOn(HWND target, const std::wstring& title) {
     lastRect_ = RECT{};
     SyncPresenterRect();
     UpdatePresenterVisibility();
+}
+
+capture::CaptureSession::Source App::DesiredSource() const {
+    // Monitor capture delivers at full compositor rate where window capture
+    // is throttled (~60fps) — use it whenever the target covers the monitor
+    // (borderless fullscreen). Window capture remains the windowed fallback.
+    if (!tracker_.IsAttached()) return capture::CaptureSession::Source::Window;
+    RECT r = tracker_.GetRect();
+    HMONITOR monitor = MonitorFromWindow(tracker_.Target(), MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{sizeof(MONITORINFO)};
+    if (!GetMonitorInfoW(monitor, &mi)) return capture::CaptureSession::Source::Window;
+    auto closeTo = [](LONG a, LONG b) { return (a > b ? a - b : b - a) <= 2; };
+    const RECT& m = mi.rcMonitor;
+    const bool covers = closeTo(r.left, m.left) && closeTo(r.top, m.top) &&
+                        closeTo(r.right, m.right) && closeTo(r.bottom, m.bottom);
+    return covers ? capture::CaptureSession::Source::Monitor
+                  : capture::CaptureSession::Source::Window;
 }
 
 void App::StopCapture() {
@@ -259,6 +314,9 @@ void App::SyncPresenterRect() {
 
     if (!RectsEqual(rect, lastRect_)) {
         lastRect_ = rect;
+        // MatchRect resizes the swapchain — exclusive with the frame worker's
+        // Present.
+        std::lock_guard<std::recursive_mutex> lock(gpuMutex_);
         presenter_.MatchRect(rect);
     }
 }
@@ -268,9 +326,25 @@ void App::OnFrame(ID3D11Texture2D* frame, UINT contentW, UINT contentH) {
         HandleTestCaptureFrame(frame, contentW, contentH);
         return;
     }
+    if (!options_.testRateTarget.empty()) {
+        HandleTestRateFrame();
+        return;
+    }
 
     lastInW_ = contentW;
     lastInH_ = contentH;
+
+    // Arrival rate, counted before any gating — this is what WGC delivers.
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    ++arrivalFrames_;
+    if (arrivalWindowStart_ == 0) arrivalWindowStart_ = now.QuadPart;
+    const double arrivalWindowMs = (now.QuadPart - arrivalWindowStart_) * qpcToMs_;
+    if (arrivalWindowMs >= 1000.0) {
+        captureFps_ = static_cast<float>(arrivalFrames_ * 1000.0 / arrivalWindowMs);
+        arrivalFrames_ = 0;
+        arrivalWindowStart_ = now.QuadPart;
+    }
 
     if (!PresenterShouldShow()) return;
 
@@ -283,6 +357,7 @@ void App::OnFrame(ID3D11Texture2D* frame, UINT contentW, UINT contentH) {
 
     HRESULT presentHr = S_OK;
     try {
+        std::lock_guard<std::recursive_mutex> lock(gpuMutex_);
         ID3D11Texture2D* processed = pipeline_.Process(d3d_.Context(), frame, contentW,
                                                        contentH, outW, outH,
                                                        BuildProcessParams());
@@ -365,7 +440,8 @@ void App::RestartSelf() {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
-    PostQuitMessage(0);
+    // May be called from the frame worker thread; route through the main loop.
+    PostMessageW(msgWindow_, kMsgQuit, 0, 0);
 }
 
 void App::OnTargetMinimized(bool minimized) {
@@ -427,6 +503,26 @@ int App::RunTestFind() {
     return 0;
 }
 
+void App::HandleTestRateFrame() {
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    if (rateStart_ == 0) {
+        rateStart_ = now.QuadPart;
+        rateFrames_ = 0;
+        return;
+    }
+    ++rateFrames_;
+    const double elapsedMs = (now.QuadPart - rateStart_) * qpcToMs_;
+    if (elapsedMs >= 5000.0) {
+        const double rate = rateFrames_ * 1000.0 / elapsedMs;
+        wprintf(L"test-rate: %.1f frames/sec over %.0f ms (%u frames)\n", rate, elapsedMs,
+                rateFrames_);
+        fflush(stdout);
+        exitCode_ = 0;
+        PostMessageW(msgWindow_, kMsgQuit, 0, 0); // worker thread — post to main
+    }
+}
+
 void App::HandleTestCaptureFrame(ID3D11Texture2D* frame, UINT w, UINT h) {
     // Dump the first frame: WGC only produces frames when window content
     // changes, so a static window may never deliver a second one.
@@ -450,7 +546,7 @@ void App::HandleTestCaptureFrame(ID3D11Texture2D* frame, UINT w, UINT h) {
             fsrOk ? L"ok" : L"FAIL", dir.c_str());
     fflush(stdout);
     exitCode_ = (rawOk && fsrOk) ? 0 : 4;
-    PostQuitMessage(exitCode_);
+    PostMessageW(msgWindow_, kMsgQuit, exitCode_, 0); // worker thread — post to main
 }
 
 } // namespace app

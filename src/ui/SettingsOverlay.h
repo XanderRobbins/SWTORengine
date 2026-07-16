@@ -21,8 +21,9 @@ namespace ui {
 class SettingsOverlay {
 public:
     struct Stats {
-        float processMs = 0.0f; // CPU cost of dispatch+present per frame
-        float fps = 0.0f;
+        float processMs = 0.0f;  // CPU cost of dispatch+present per frame
+        float fps = 0.0f;        // frames presented per second
+        float captureFps = 0.0f; // frames delivered by WGC per second
         UINT inW = 0, inH = 0, outW = 0, outH = 0;
         bool captureActive = false;
         bool bypassed = false;

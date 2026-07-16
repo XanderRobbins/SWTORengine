@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <mutex>
 #include <string>
 
 #include "Config.h"
@@ -19,6 +20,8 @@ struct AppOptions {
     bool smokeTest = false;             // open/close cleanly, exit 0
     std::wstring testCaptureTarget;     // capture N frames, dump raw+processed PNGs, exit
     std::wstring testFindTarget;        // print target rect for a few seconds, exit
+    std::wstring testRateTarget;        // measure capture arrival rate for ~5s, exit
+    bool testRateMonitor = false;       // force monitor capture for --test-rate
     std::wstring targetOverride;        // overrides config targetTitle
     std::wstring outDir;                // where test PNGs go (default: exe dir)
 };
@@ -38,6 +41,7 @@ private:
     // capture lifecycle
     bool AcquireTarget(const std::wstring& needle);
     void StartCaptureOn(HWND target, const std::wstring& title);
+    capture::CaptureSession::Source DesiredSource() const;
     void StopCapture();
     void OnFrame(ID3D11Texture2D* frame, UINT contentW, UINT contentH);
 
@@ -58,6 +62,7 @@ private:
     // test modes
     int RunTestFind();
     void HandleTestCaptureFrame(ID3D11Texture2D* frame, UINT w, UINT h);
+    void HandleTestRateFrame();
 
     HINSTANCE instance_ = nullptr;
     AppOptions options_;
@@ -73,6 +78,13 @@ private:
 
     HWND msgWindow_ = nullptr;
     std::wstring targetTitleLive_;
+
+    // Frame callbacks arrive on a WGC worker thread (free-threaded pool);
+    // the shared D3D context / swapchains are guarded by this. Recursive
+    // because config-change handlers re-enter SyncPresenterRect while the
+    // settings render already holds it.
+    std::recursive_mutex gpuMutex_;
+    HWND pendingTarget_ = nullptr; // set by UI, consumed on the main thread
     RECT lastRect_{};
     bool bypassed_ = false;
     bool targetForeground_ = true;
@@ -86,6 +98,13 @@ private:
     LONGLONG statWindowStart_ = 0;
     UINT lastInW_ = 0, lastInH_ = 0;
     UINT frameCounter_ = 0;
+    // capture arrival rate (counts every FrameArrived, even when not presenting)
+    float captureFps_ = 0.0f;
+    UINT arrivalFrames_ = 0;
+    LONGLONG arrivalWindowStart_ = 0;
+    // --test-rate accumulators
+    UINT rateFrames_ = 0;
+    LONGLONG rateStart_ = 0;
 
     gpu::ShaderPipeline::ProcessParams BuildProcessParams();
 

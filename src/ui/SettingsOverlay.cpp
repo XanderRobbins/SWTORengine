@@ -67,6 +67,10 @@ bool SettingsOverlay::Init(HINSTANCE instance, gpu::D3DContext& d3d, app::Config
                             nullptr, nullptr, instance, this);
     if (!hwnd_) return false;
 
+    // Keep the settings panel out of monitor capture (it floats over the
+    // game and would otherwise echo into the enhanced image).
+    SetWindowDisplayAffinity(hwnd_, WDA_EXCLUDEFROMCAPTURE);
+
     swapchain_ = d3d_->CreateSwapChainForWindow(hwnd_, 520, 480);
     EnsureRenderTarget();
 
@@ -151,7 +155,8 @@ void SettingsOverlay::Render(const Stats& stats) {
     if (stats.captureActive) {
         ImGui::Text("Capturing: %s", Narrow(stats.targetTitle).c_str());
         ImGui::Text("Input %ux%u  ->  Output %ux%u", stats.inW, stats.inH, stats.outW, stats.outH);
-        ImGui::Text("%.1f fps   |   %.2f ms CPU dispatch+present", stats.fps, stats.processMs);
+        ImGui::Text("%.1f fps presented   |   %.1f fps captured   |   %.2f ms CPU", stats.fps,
+                    stats.captureFps, stats.processMs);
     } else {
         ImGui::TextColored(ImVec4(1.f, 0.6f, 0.2f, 1.f),
                            "No capture active — waiting for target window");

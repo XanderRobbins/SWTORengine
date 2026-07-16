@@ -16,18 +16,26 @@ CaptureSession::~CaptureSession() {
 
 bool CaptureSession::Start(
     winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice const& device, HWND target,
-    FrameCallback onFrame, ClosedCallback onClosed) {
+    Source source, FrameCallback onFrame, ClosedCallback onClosed) {
     Stop();
 
     device_ = device;
+    source_ = source;
     onFrame_ = std::move(onFrame);
     onClosed_ = std::move(onClosed);
 
-    // GraphicsCaptureItem::CreateForWindow (the COM interop path for Win32 apps).
+    // COM interop path for Win32 apps (CreateForWindow / CreateForMonitor).
     auto factory = winrt::get_activation_factory<GraphicsCaptureItem>();
     auto interop = factory.as<IGraphicsCaptureItemInterop>();
-    HRESULT hr = interop->CreateForWindow(target, winrt::guid_of<GraphicsCaptureItem>(),
-                                          winrt::put_abi(item_));
+    HRESULT hr;
+    if (source == Source::Monitor) {
+        HMONITOR monitor = MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST);
+        hr = interop->CreateForMonitor(monitor, winrt::guid_of<GraphicsCaptureItem>(),
+                                       winrt::put_abi(item_));
+    } else {
+        hr = interop->CreateForWindow(target, winrt::guid_of<GraphicsCaptureItem>(),
+                                      winrt::put_abi(item_));
+    }
     if (FAILED(hr) || !item_) {
         item_ = nullptr;
         return false;
@@ -36,8 +44,10 @@ bool CaptureSession::Start(
     poolSize_ = item_.Size();
     if (poolSize_.Width <= 0 || poolSize_.Height <= 0) poolSize_ = {1, 1};
 
-    framePool_ = Direct3D11CaptureFramePool::Create(
-        device_, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, poolSize_);
+    // 4 buffers: at 240Hz a 2-deep pool risks starving delivery while a
+    // buffer is in flight.
+    framePool_ = Direct3D11CaptureFramePool::CreateFreeThreaded(
+        device_, DirectXPixelFormat::B8G8R8A8UIntNormalized, 4, poolSize_);
     frameArrivedToken_ = framePool_.FrameArrived({this, &CaptureSession::OnFrameArrived});
 
     closedToken_ = item_.Closed([this](auto&&, auto&&) {
@@ -53,12 +63,17 @@ bool CaptureSession::Start(
     try {
         session_.IsBorderRequired(false); // suppress the yellow capture border
     } catch (...) {}
+    try {
+        // Win11 24H2+: make sure no minimum-interval throttle applies.
+        session_.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan{0});
+    } catch (...) {}
 
     session_.StartCapture();
     return true;
 }
 
 void CaptureSession::Stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (framePool_ && frameArrivedToken_.value) {
         framePool_.FrameArrived(frameArrivedToken_);
         frameArrivedToken_ = {};
@@ -82,6 +97,9 @@ void CaptureSession::Stop() {
 
 void CaptureSession::OnFrameArrived(Direct3D11CaptureFramePool const& pool,
                                     winrt::Windows::Foundation::IInspectable const&) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!session_) return; // Stop() won the race
+
     // Drain to the newest frame; processing stale ones would add latency that
     // never recovers once we fall behind the game's present rate.
     auto frame = pool.TryGetNextFrame();
