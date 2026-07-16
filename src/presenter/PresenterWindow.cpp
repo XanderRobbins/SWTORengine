@@ -87,14 +87,13 @@ void PresenterWindow::Hide() {
     shown_ = false;
 }
 
-void PresenterWindow::PresentFrame(ID3D11DeviceContext* ctx, ID3D11Texture2D* processed) {
-    if (!swapchain_ || !processed) return;
+HRESULT PresenterWindow::PresentFrame(ID3D11DeviceContext* ctx, ID3D11Texture2D* processed) {
+    if (!swapchain_ || !processed) return S_OK;
 
     winrt::com_ptr<ID3D11Texture2D> backbuffer;
-    if (FAILED(swapchain_->GetBuffer(0, winrt::guid_of<ID3D11Texture2D>(),
-                                     backbuffer.put_void()))) {
-        return;
-    }
+    HRESULT hr =
+        swapchain_->GetBuffer(0, winrt::guid_of<ID3D11Texture2D>(), backbuffer.put_void());
+    if (FAILED(hr)) return hr;
 
     D3D11_TEXTURE2D_DESC src{}, dst{};
     processed->GetDesc(&src);
@@ -107,7 +106,7 @@ void PresenterWindow::PresentFrame(ID3D11DeviceContext* ctx, ID3D11Texture2D* pr
     box.back = 1;
     ctx->CopySubresourceRegion(backbuffer.get(), 0, 0, 0, 0, processed, 0, &box);
 
-    swapchain_->Present(0, 0);
+    return swapchain_->Present(0, 0);
 }
 
 } // namespace presenter

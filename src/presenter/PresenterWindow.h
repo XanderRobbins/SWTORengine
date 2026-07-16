@@ -27,7 +27,9 @@ public:
 
     // Copy the processed texture (R8G8B8A8, sized to the current rect) into
     // the backbuffer and present immediately (no vsync wait — latency first).
-    void PresentFrame(ID3D11DeviceContext* ctx, ID3D11Texture2D* processed);
+    // Returns the Present HRESULT (S_OK when skipped) so the app can detect
+    // device removal (display/GPU switches).
+    HRESULT PresentFrame(ID3D11DeviceContext* ctx, ID3D11Texture2D* processed);
 
     UINT Width() const { return width_; }
     UINT Height() const { return height_; }

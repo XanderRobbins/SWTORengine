@@ -181,7 +181,11 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 stats.captureActive = capture_.IsActive();
                 stats.bypassed = bypassed_;
                 stats.targetTitle = targetTitleLive_;
-                settings_.Render(stats);
+                try {
+                    settings_.Render(stats);
+                } catch (...) {
+                    RestartSelf();
+                }
             }
             return 0;
         }
@@ -277,11 +281,22 @@ void App::OnFrame(ID3D11Texture2D* frame, UINT contentW, UINT contentH) {
     const UINT outH = presenter_.Height();
     if (!outW || !outH) return;
 
-    ID3D11Texture2D* processed = pipeline_.Process(d3d_.Context(), frame, contentW, contentH,
-                                                   outW, outH, BuildProcessParams());
-    if (!processed) return;
-
-    presenter_.PresentFrame(d3d_.Context(), processed);
+    HRESULT presentHr = S_OK;
+    try {
+        ID3D11Texture2D* processed = pipeline_.Process(d3d_.Context(), frame, contentW,
+                                                       contentH, outW, outH,
+                                                       BuildProcessParams());
+        if (!processed) return;
+        presentHr = presenter_.PresentFrame(d3d_.Context(), processed);
+    } catch (...) {
+        // GPU work threw (device removed mid-frame on display/GPU switch)
+        RestartSelf();
+        return;
+    }
+    if (presentHr == DXGI_ERROR_DEVICE_REMOVED || presentHr == DXGI_ERROR_DEVICE_RESET) {
+        RestartSelf();
+        return;
+    }
     presenter_.ShowNoActivate();
 
     QueryPerformanceCounter(&t1);
@@ -333,6 +348,24 @@ void App::UpdatePresenterVisibility() {
     } else {
         presenter_.Hide();
     }
+}
+
+void App::RestartSelf() {
+    if (restarting_) return;
+    restarting_ = true;
+
+    wchar_t exe[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    std::wstring cmdLine = GetCommandLineW(); // CreateProcess wants it mutable
+    if (CreateProcessW(exe, cmdLine.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si,
+                       &pi)) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    PostQuitMessage(0);
 }
 
 void App::OnTargetMinimized(bool minimized) {

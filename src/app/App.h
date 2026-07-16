@@ -50,6 +50,11 @@ private:
     void UpdatePresenterVisibility();
     bool PresenterShouldShow() const;
 
+    // Device-lost recovery: every GPU object (capture session, swapchains,
+    // ImGui backend) hangs off the dead device, so relaunch cleanly instead
+    // of attempting piecemeal reconstruction.
+    void RestartSelf();
+
     // test modes
     int RunTestFind();
     void HandleTestCaptureFrame(ID3D11Texture2D* frame, UINT w, UINT h);
@@ -86,6 +91,7 @@ private:
 
     int testFramesSeen_ = 0;
     int exitCode_ = 0;
+    bool restarting_ = false;
 };
 
 } // namespace app
