@@ -72,7 +72,10 @@ void mainCS(uint3 id : SV_DispatchThreadID) {
     // Boosts mid-frequency relief (fabric, stone, carpet pile) that reads as
     // depth. Soft-knee on the delta suppresses halos around strong edges. ---
     if (Clarity > 0.0) {
-        const float3 blur = BlurTexture.Load(int3(pos, 0)).rgb;
+        // BlurTexture is half-res; bilinear upsample is free and invisible
+        // for a wide Gaussian.
+        const float2 uvBlur = (float2(pos) + 0.5) / OutSize;
+        const float3 blur = BlurTexture.SampleLevel(LinearSampler, uvBlur, 0).rgb;
         const float lumaC = dot(c, kLuma);
         const float lumaB = dot(blur, kLuma);
         float delta = lumaC - lumaB;

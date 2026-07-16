@@ -242,45 +242,70 @@ ID3D11Texture2D* ShaderPipeline::Process(ID3D11DeviceContext* ctx, ID3D11Texture
         easuTexH = static_cast<float>(viewportH);
     }
 
-    // --- EASU: spatial upscale viewport -> output resolution ---
-    EasuConstants easu{};
-    FsrEasuCon(easu.con0, easu.con1, easu.con2, easu.con3,
-               static_cast<AF1>(viewportW), static_cast<AF1>(viewportH),
-               static_cast<AF1>(easuTexW), static_cast<AF1>(easuTexH),
-               static_cast<AF1>(outW), static_cast<AF1>(outH));
-    ctx->UpdateSubresource(cbEasu_.get(), 0, nullptr, &easu, 0, 0);
-
     const UINT groupsX = (outW + 15) / 16;
     const UINT groupsY = (outH + 15) / 16;
-    DispatchPass(ctx, easuCS_.get(), cbEasu_.get(), easuInput, midUAV_.get(), groupsX, groupsY);
+
+    // --- EASU: spatial upscale viewport -> output resolution.
+    // At 1:1 (game already at presenter size, the common fullscreen case)
+    // EASU is visually an identity — skip the whole pass and feed RCAS
+    // directly. ---
+    ID3D11ShaderResourceView* rcasInput = midSRV_.get();
+    const bool sameScale = (viewportW == outW && viewportH == outH);
+    if (sameScale) {
+        rcasInput = easuInput;
+    } else {
+        EasuConstants easu{};
+        FsrEasuCon(easu.con0, easu.con1, easu.con2, easu.con3,
+                   static_cast<AF1>(viewportW), static_cast<AF1>(viewportH),
+                   static_cast<AF1>(easuTexW), static_cast<AF1>(easuTexH),
+                   static_cast<AF1>(outW), static_cast<AF1>(outH));
+        ctx->UpdateSubresource(cbEasu_.get(), 0, nullptr, &easu, 0, 0);
+        DispatchPass(ctx, easuCS_.get(), cbEasu_.get(), easuInput, midUAV_.get(), groupsX,
+                     groupsY);
+    }
 
     // --- RCAS: sharpen at output resolution ---
     RcasConstants rcas{};
     FsrRcasCon(rcas.con, params.sharpness);
     ctx->UpdateSubresource(cbRcas_.get(), 0, nullptr, &rcas, 0, 0);
-    DispatchPass(ctx, rcasCS_.get(), cbRcas_.get(), midSRV_.get(), outUAV_.get(), groupsX,
-                 groupsY);
+    DispatchPass(ctx, rcasCS_.get(), cbRcas_.get(), rcasInput, outUAV_.get(), groupsX, groupsY);
 
     // --- Deband + clarity + color grade (skipped entirely when neutral) ---
     if (!params.PostPassNeeded()) return out_.get();
 
-    // Clarity needs a wide Gaussian of the sharpened image (separable, 2 passes).
+    const UINT halfW = (outW + 1) / 2;
+    const UINT halfH = (outH + 1) / 2;
+    const UINT halfGX = (halfW + 7) / 8;
+    const UINT halfGY = (halfH + 7) / 8;
+
+    // Clarity needs a wide Gaussian of the sharpened image. A blur is
+    // low-frequency by definition, so the whole chain runs at half res
+    // (downsample -> separable blur) at a quarter of the full-res cost;
+    // the post pass upsamples bilinearly.
     ID3D11ShaderResourceView* claritySRV = outSRV_.get(); // ignored when clarity == 0
     if (params.clarity > 0.0f) {
         if (!blur_) {
-            if (!MakeUAVTexture(device_.get(), outW, outH, blurTmp_, &blurTmpUAV_, &blurTmpSRV_))
+            if (!MakeUAVTexture(device_.get(), halfW, halfH, blurTmp_, &blurTmpUAV_,
+                                &blurTmpSRV_))
                 return nullptr;
-            if (!MakeUAVTexture(device_.get(), outW, outH, blur_, &blurUAV_, &blurSRV_))
+            if (!MakeUAVTexture(device_.get(), halfW, halfH, blur_, &blurUAV_, &blurSRV_))
                 return nullptr;
         }
-        BlurConstants bx{1.0f, 0.0f, static_cast<float>(outW), static_cast<float>(outH)};
-        BlurConstants by{0.0f, 1.0f, static_cast<float>(outW), static_cast<float>(outH)};
+        // 2x downsample: the bilinear passthrough shader does exactly this.
+        // (cbPassthrough_ is free here — passthrough mode returned earlier.)
+        PassthroughConstants down{halfW, halfH, 1.0f, 1.0f};
+        ctx->UpdateSubresource(cbPassthrough_.get(), 0, nullptr, &down, 0, 0);
+        DispatchPass(ctx, passthroughCS_.get(), cbPassthrough_.get(), outSRV_.get(),
+                     blurUAV_.get(), halfGX, halfGY);
+
+        BlurConstants bx{1.0f, 0.0f, static_cast<float>(halfW), static_cast<float>(halfH)};
+        BlurConstants by{0.0f, 1.0f, static_cast<float>(halfW), static_cast<float>(halfH)};
         ctx->UpdateSubresource(cbBlurX_.get(), 0, nullptr, &bx, 0, 0);
         ctx->UpdateSubresource(cbBlurY_.get(), 0, nullptr, &by, 0, 0);
-        DispatchPass(ctx, blurCS_.get(), cbBlurX_.get(), outSRV_.get(), blurTmpUAV_.get(),
-                     (outW + 7) / 8, (outH + 7) / 8);
+        DispatchPass(ctx, blurCS_.get(), cbBlurX_.get(), blurSRV_.get(), blurTmpUAV_.get(),
+                     halfGX, halfGY);
         DispatchPass(ctx, blurCS_.get(), cbBlurY_.get(), blurTmpSRV_.get(), blurUAV_.get(),
-                     (outW + 7) / 8, (outH + 7) / 8);
+                     halfGX, halfGY);
         claritySRV = blurSRV_.get();
     }
 
@@ -288,8 +313,6 @@ ID3D11Texture2D* ShaderPipeline::Process(ID3D11DeviceContext* ctx, ID3D11Texture
     // wide glow (effective radius ~16px at full res), all at quarter cost.
     ID3D11ShaderResourceView* bloomSRV = outSRV_.get(); // ignored when bloom == 0
     if (params.bloom > 0.0f) {
-        const UINT halfW = (outW + 1) / 2;
-        const UINT halfH = (outH + 1) / 2;
         if (!bloom_) {
             if (!MakeUAVTexture(device_.get(), halfW, halfH, bloomTmp_, &bloomTmpUAV_,
                                 &bloomTmpSRV_))
