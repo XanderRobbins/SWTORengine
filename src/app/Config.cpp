@@ -50,6 +50,7 @@ Config Config::Load() {
         config.fxaa = j.value("fxaa", config.fxaa);
         config.fxaaTextProtect = j.value("fxaaTextProtect", config.fxaaTextProtect);
         config.debandStrength = j.value("debandStrength", config.debandStrength);
+        config.clarity = j.value("clarity", config.clarity);
         config.vibrance = j.value("vibrance", config.vibrance);
         config.saturation = j.value("saturation", config.saturation);
         config.contrast = j.value("contrast", config.contrast);
@@ -74,6 +75,7 @@ void Config::Save() const {
         {"fxaa", fxaa},
         {"fxaaTextProtect", fxaaTextProtect},
         {"debandStrength", debandStrength},
+        {"clarity", clarity},
         {"vibrance", vibrance},
         {"saturation", saturation},
         {"contrast", contrast},

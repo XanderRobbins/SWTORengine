@@ -176,6 +176,7 @@ void SettingsOverlay::Render(const Stats& stats) {
         }
         changed |= ImGui::SliderFloat("Deband (smooth sky/fog gradients)",
                                       &config_->debandStrength, 0.0f, 3.0f);
+        changed |= ImGui::SliderFloat("Clarity (texture depth)", &config_->clarity, 0.0f, 1.0f);
     }
 
     if (ImGui::CollapsingHeader("Color", ImGuiTreeNodeFlags_DefaultOpen)) {

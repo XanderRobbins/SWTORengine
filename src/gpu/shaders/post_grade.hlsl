@@ -5,6 +5,7 @@
 // Grain/vignette are last so the sharpener never amplifies them.
 
 Texture2D InputTexture : register(t0);
+Texture2D BlurTexture : register(t1); // wide Gaussian of the input (for clarity)
 RWTexture2D<float4> OutputTexture : register(u0);
 
 cbuffer PostConstants : register(b0) {
@@ -19,6 +20,8 @@ cbuffer PostConstants : register(b0) {
     float DebandStrength; // 0 = off, ~1 typical
     float FrameIndex;     // animates grain/deband jitter
     float2 OutSize;
+    float Clarity;        // 0..1 local contrast (mid-frequency "depth")
+    float3 _pad;
 };
 
 static const float3 kLuma = float3(0.299, 0.587, 0.114);
@@ -60,6 +63,19 @@ void mainCS(uint3 id : SV_DispatchThreadID) {
             float dither = (Hash(float2(pos) * 1.613 + FrameIndex) - 0.5) / 255.0;
             c = avg + dither;
         }
+    }
+
+    // --- Clarity: luma-preserving local contrast at Gaussian-blur scale.
+    // Boosts mid-frequency relief (fabric, stone, carpet pile) that reads as
+    // depth. Soft-knee on the delta suppresses halos around strong edges. ---
+    if (Clarity > 0.0) {
+        const float3 blur = BlurTexture.Load(int3(pos, 0)).rgb;
+        const float lumaC = dot(c, kLuma);
+        const float lumaB = dot(blur, kLuma);
+        float delta = lumaC - lumaB;
+        delta = delta / (1.0 + 3.0 * abs(delta));
+        const float boosted = max(lumaC + Clarity * delta, 0.0);
+        c *= boosted / max(lumaC, 1e-3);
     }
 
     // --- Color grade ---

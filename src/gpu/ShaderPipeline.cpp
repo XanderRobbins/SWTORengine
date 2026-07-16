@@ -32,10 +32,16 @@ struct RcasConstants {
     AU1 con[4];
 };
 
+struct BlurConstants {
+    float dirX, dirY;
+    float outW, outH;
+};
+
 struct PostConstants {
     float vibrance, saturation, contrast, gamma;
     float exposure, filmic, vignette, grain;
     float debandStrength, frameIndex, outW, outH;
+    float clarity, pad0, pad1, pad2;
 };
 
 struct PassthroughConstants {
@@ -83,6 +89,7 @@ bool ShaderPipeline::Init(ID3D11Device* device, const std::wstring& shaderDir,
     if (!CompileCS(shaderDir + L"fxaa.hlsl", fxaaCS_, error)) return false;
     if (!CompileCS(shaderDir + L"fsr1_easu.hlsl", easuCS_, error)) return false;
     if (!CompileCS(shaderDir + L"fsr1_rcas.hlsl", rcasCS_, error)) return false;
+    if (!CompileCS(shaderDir + L"clarity_blur.hlsl", blurCS_, error)) return false;
     if (!CompileCS(shaderDir + L"post_grade.hlsl", postCS_, error)) return false;
     if (!CompileCS(shaderDir + L"passthrough.hlsl", passthroughCS_, error)) return false;
 
@@ -96,9 +103,11 @@ bool ShaderPipeline::Init(ID3D11Device* device, const std::wstring& shaderDir,
     cbFxaa_ = MakeConstantBuffer(device_.get(), sizeof(FxaaConstants));
     cbEasu_ = MakeConstantBuffer(device_.get(), sizeof(EasuConstants));
     cbRcas_ = MakeConstantBuffer(device_.get(), sizeof(RcasConstants));
+    cbBlurX_ = MakeConstantBuffer(device_.get(), sizeof(BlurConstants));
+    cbBlurY_ = MakeConstantBuffer(device_.get(), sizeof(BlurConstants));
     cbPost_ = MakeConstantBuffer(device_.get(), sizeof(PostConstants));
     cbPassthrough_ = MakeConstantBuffer(device_.get(), sizeof(PassthroughConstants));
-    return cbFxaa_ && cbEasu_ && cbRcas_ && cbPost_ && cbPassthrough_;
+    return cbFxaa_ && cbEasu_ && cbRcas_ && cbBlurX_ && cbBlurY_ && cbPost_ && cbPassthrough_;
 }
 
 bool ShaderPipeline::CompileCS(const std::wstring& path,
@@ -138,6 +147,8 @@ bool ShaderPipeline::EnsureOutputTextures(UINT outW, UINT outH) {
     mid_ = nullptr; midUAV_ = nullptr; midSRV_ = nullptr;
     out_ = nullptr; outUAV_ = nullptr; outSRV_ = nullptr;
     post_ = nullptr; postUAV_ = nullptr;
+    blurTmp_ = nullptr; blurTmpUAV_ = nullptr; blurTmpSRV_ = nullptr;
+    blur_ = nullptr; blurUAV_ = nullptr; blurSRV_ = nullptr;
 
     if (!MakeUAVTexture(device_.get(), outW, outH, mid_, &midUAV_, &midSRV_)) return false;
     if (!MakeUAVTexture(device_.get(), outW, outH, out_, &outUAV_, &outSRV_)) return false;
@@ -238,18 +249,52 @@ ID3D11Texture2D* ShaderPipeline::Process(ID3D11DeviceContext* ctx, ID3D11Texture
     DispatchPass(ctx, rcasCS_.get(), cbRcas_.get(), midSRV_.get(), outUAV_.get(), groupsX,
                  groupsY);
 
-    // --- Deband + color grade (skipped entirely when neutral) ---
+    // --- Deband + clarity + color grade (skipped entirely when neutral) ---
     if (!params.PostPassNeeded()) return out_.get();
+
+    // Clarity needs a wide Gaussian of the sharpened image (separable, 2 passes).
+    ID3D11ShaderResourceView* claritySRV = outSRV_.get(); // ignored when clarity == 0
+    if (params.clarity > 0.0f) {
+        if (!blur_) {
+            if (!MakeUAVTexture(device_.get(), outW, outH, blurTmp_, &blurTmpUAV_, &blurTmpSRV_))
+                return nullptr;
+            if (!MakeUAVTexture(device_.get(), outW, outH, blur_, &blurUAV_, &blurSRV_))
+                return nullptr;
+        }
+        BlurConstants bx{1.0f, 0.0f, static_cast<float>(outW), static_cast<float>(outH)};
+        BlurConstants by{0.0f, 1.0f, static_cast<float>(outW), static_cast<float>(outH)};
+        ctx->UpdateSubresource(cbBlurX_.get(), 0, nullptr, &bx, 0, 0);
+        ctx->UpdateSubresource(cbBlurY_.get(), 0, nullptr, &by, 0, 0);
+        DispatchPass(ctx, blurCS_.get(), cbBlurX_.get(), outSRV_.get(), blurTmpUAV_.get(),
+                     (outW + 7) / 8, (outH + 7) / 8);
+        DispatchPass(ctx, blurCS_.get(), cbBlurY_.get(), blurTmpSRV_.get(), blurUAV_.get(),
+                     (outW + 7) / 8, (outH + 7) / 8);
+        claritySRV = blurSRV_.get();
+    }
 
     PostConstants post{params.vibrance,       params.saturation,
                        params.contrast,       params.gamma,
                        params.exposure,       params.filmic,
                        params.vignette,       params.grain,
                        params.debandStrength, static_cast<float>(params.frameIndex % 1024),
-                       static_cast<float>(outW), static_cast<float>(outH)};
+                       static_cast<float>(outW), static_cast<float>(outH),
+                       params.clarity,        0.0f, 0.0f, 0.0f};
     ctx->UpdateSubresource(cbPost_.get(), 0, nullptr, &post, 0, 0);
-    DispatchPass(ctx, postCS_.get(), cbPost_.get(), outSRV_.get(), postUAV_.get(),
-                 (outW + 7) / 8, (outH + 7) / 8);
+
+    {
+        ID3D11Buffer* cbs[] = {cbPost_.get()};
+        ID3D11ShaderResourceView* srvs[] = {outSRV_.get(), claritySRV};
+        ID3D11UnorderedAccessView* uavs[] = {postUAV_.get()};
+        ID3D11ShaderResourceView* nullSRV[] = {nullptr, nullptr};
+        ID3D11UnorderedAccessView* nullUAV[] = {nullptr};
+        ctx->CSSetShader(postCS_.get(), nullptr, 0);
+        ctx->CSSetConstantBuffers(0, 1, cbs);
+        ctx->CSSetShaderResources(0, 2, srvs);
+        ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
+        ctx->Dispatch((outW + 7) / 8, (outH + 7) / 8, 1);
+        ctx->CSSetShaderResources(0, 2, nullSRV);
+        ctx->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
+    }
     return post_.get();
 }
 

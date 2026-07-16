@@ -15,6 +15,7 @@ struct Config {
     bool fxaa = true;              // post-AA before upscale
     float fxaaTextProtect = 0.75f; // 0..1, keep UI text crisp under FXAA
     float debandStrength = 1.0f;   // 0 = off
+    float clarity = 0.35f;         // 0..1 local contrast ("texture depth")
     float vibrance = 0.15f;       // -1..1
     float saturation = 1.0f;      // 1 = neutral
     float contrast = 1.0f;        // 1 = neutral
