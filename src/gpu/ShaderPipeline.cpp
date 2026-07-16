@@ -42,6 +42,11 @@ struct BrightConstants {
     float halfW, halfH;
 };
 
+struct BlendConstants {
+    float t, pad;
+    float outW, outH;
+};
+
 struct PostConstants {
     float vibrance, saturation, contrast, gamma;
     float exposure, filmic, vignette, grain;
@@ -96,6 +101,7 @@ bool ShaderPipeline::Init(ID3D11Device* device, const std::wstring& shaderDir,
     if (!CompileCS(shaderDir + L"fsr1_rcas.hlsl", rcasCS_, error)) return false;
     if (!CompileCS(shaderDir + L"clarity_blur.hlsl", blurCS_, error)) return false;
     if (!CompileCS(shaderDir + L"bright_pass.hlsl", brightCS_, error)) return false;
+    if (!CompileCS(shaderDir + L"frame_blend.hlsl", blendCS_, error)) return false;
     if (!CompileCS(shaderDir + L"post_grade.hlsl", postCS_, error)) return false;
     if (!CompileCS(shaderDir + L"passthrough.hlsl", passthroughCS_, error)) return false;
 
@@ -114,6 +120,7 @@ bool ShaderPipeline::Init(ID3D11Device* device, const std::wstring& shaderDir,
     cbBlurXHalf_ = MakeConstantBuffer(device_.get(), sizeof(BlurConstants));
     cbBlurYHalf_ = MakeConstantBuffer(device_.get(), sizeof(BlurConstants));
     cbBright_ = MakeConstantBuffer(device_.get(), sizeof(BrightConstants));
+    cbBlend_ = MakeConstantBuffer(device_.get(), sizeof(BlendConstants));
     cbPost_ = MakeConstantBuffer(device_.get(), sizeof(PostConstants));
     cbPassthrough_ = MakeConstantBuffer(device_.get(), sizeof(PassthroughConstants));
     return cbFxaa_ && cbEasu_ && cbRcas_ && cbBlurX_ && cbBlurY_ && cbBlurXHalf_ &&
@@ -161,6 +168,11 @@ bool ShaderPipeline::EnsureOutputTextures(UINT outW, UINT outH) {
     blur_ = nullptr; blurUAV_ = nullptr; blurSRV_ = nullptr;
     bloomTmp_ = nullptr; bloomTmpUAV_ = nullptr; bloomTmpSRV_ = nullptr;
     bloom_ = nullptr; bloomUAV_ = nullptr; bloomSRV_ = nullptr;
+    hist_[0] = nullptr; hist_[1] = nullptr;
+    histSRV_[0] = nullptr; histSRV_[1] = nullptr;
+    blendOut_ = nullptr; blendOutUAV_ = nullptr;
+    histCount_ = 0;
+    histNewest_ = 0;
 
     if (!MakeUAVTexture(device_.get(), outW, outH, mid_, &midUAV_, &midSRV_)) return false;
     if (!MakeUAVTexture(device_.get(), outW, outH, out_, &outUAV_, &outSRV_)) return false;
@@ -169,6 +181,58 @@ bool ShaderPipeline::EnsureOutputTextures(UINT outW, UINT outH) {
     outW_ = outW;
     outH_ = outH;
     return true;
+}
+
+void ShaderPipeline::PushHistory(ID3D11DeviceContext* ctx, ID3D11Texture2D* processed) {
+    if (!processed || !outW_) return;
+    if (!hist_[0]) {
+        for (int i = 0; i < 2; ++i) {
+            D3D11_TEXTURE2D_DESC desc{};
+            desc.Width = outW_;
+            desc.Height = outH_;
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (FAILED(device_->CreateTexture2D(&desc, nullptr, hist_[i].put()))) return;
+            if (FAILED(device_->CreateShaderResourceView(hist_[i].get(), nullptr,
+                                                         histSRV_[i].put())))
+                return;
+        }
+        if (!MakeUAVTexture(device_.get(), outW_, outH_, blendOut_, &blendOutUAV_, nullptr))
+            return;
+    }
+    histNewest_ ^= 1;
+    ctx->CopyResource(hist_[histNewest_].get(), processed);
+    if (histCount_ < 2) ++histCount_;
+}
+
+ID3D11Texture2D* ShaderPipeline::BlendHistory(ID3D11DeviceContext* ctx, float t) {
+    if (histCount_ < 2 || !blendOut_) return nullptr;
+
+    BlendConstants bc{t, 0.0f, static_cast<float>(outW_), static_cast<float>(outH_)};
+    ctx->UpdateSubresource(cbBlend_.get(), 0, nullptr, &bc, 0, 0);
+
+    ID3D11Buffer* cbs[] = {cbBlend_.get()};
+    ID3D11ShaderResourceView* srvs[] = {histSRV_[histNewest_ ^ 1].get(),
+                                        histSRV_[histNewest_].get()};
+    ID3D11UnorderedAccessView* uavs[] = {blendOutUAV_.get()};
+    ID3D11ShaderResourceView* nullSRV[] = {nullptr, nullptr};
+    ID3D11UnorderedAccessView* nullUAV[] = {nullptr};
+    ctx->CSSetShader(blendCS_.get(), nullptr, 0);
+    ctx->CSSetConstantBuffers(0, 1, cbs);
+    ctx->CSSetShaderResources(0, 2, srvs);
+    ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
+    ctx->Dispatch((outW_ + 7) / 8, (outH_ + 7) / 8, 1);
+    ctx->CSSetShaderResources(0, 2, nullSRV);
+    ctx->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
+    return blendOut_.get();
+}
+
+ID3D11Texture2D* ShaderPipeline::CurrentHistory() const {
+    return histCount_ > 0 ? hist_[histNewest_].get() : nullptr;
 }
 
 ID3D11ShaderResourceView* ShaderPipeline::GetInputSRV(ID3D11Texture2D* input) {

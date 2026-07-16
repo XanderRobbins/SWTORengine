@@ -96,6 +96,7 @@ int App::Run(HINSTANCE instance, const AppOptions& options) {
         });
         SetTimer(msgWindow_, kTimerPoll, 500, nullptr);
         SetTimer(msgWindow_, kTimerUi, 16, nullptr);
+        StartInterpolationThread();
     }
 
     if (!AcquireTarget(needle) && testMode) {
@@ -236,6 +237,7 @@ int App::MessageLoop() {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    StopInterpolationThread();
     StopCapture();
     settings_.Shutdown();
     presenter_.Destroy();
@@ -355,20 +357,28 @@ void App::OnFrame(ID3D11Texture2D* frame, UINT contentW, UINT contentH) {
     const UINT outH = presenter_.Height();
     if (!outW || !outH) return;
 
-    HRESULT presentHr = S_OK;
     try {
         std::lock_guard<std::recursive_mutex> lock(gpuMutex_);
         ID3D11Texture2D* processed = pipeline_.Process(d3d_.Context(), frame, contentW,
                                                        contentH, outW, outH,
                                                        BuildProcessParams());
         if (!processed) return;
-        presentHr = presenter_.PresentFrame(d3d_.Context(), processed);
+
+        if (config_.interpolation) {
+            // Hand off to the paced present thread (blend + real, half a
+            // frame apart).
+            pipeline_.PushHistory(d3d_.Context(), processed);
+            const float dtMs = static_cast<float>((t0.QuadPart - lastArrivalQpc_) * qpcToMs_);
+            lastArrivalQpc_ = t0.QuadPart;
+            if (dtMs > 1.0f && dtMs < 100.0f) {
+                arrivalIntervalMs_ = arrivalIntervalMs_ * 0.9f + dtMs * 0.1f;
+            }
+            SetEvent(newFrameEvent_);
+        } else {
+            PresentTexture(processed);
+        }
     } catch (...) {
         // GPU work threw (device removed mid-frame on display/GPU switch)
-        RestartSelf();
-        return;
-    }
-    if (presentHr == DXGI_ERROR_DEVICE_REMOVED || presentHr == DXGI_ERROR_DEVICE_RESET) {
         RestartSelf();
         return;
     }
@@ -377,15 +387,99 @@ void App::OnFrame(ID3D11Texture2D* frame, UINT contentW, UINT contentH) {
     QueryPerformanceCounter(&t1);
     const float ms = static_cast<float>((t1.QuadPart - t0.QuadPart) * qpcToMs_);
     processMsEma_ = processMsEma_ == 0.0f ? ms : processMsEma_ * 0.95f + ms * 0.05f;
+}
+
+void App::PresentTexture(ID3D11Texture2D* texture) {
+    if (!texture) return;
+    HRESULT hr;
+    LARGE_INTEGER now{};
+    {
+        std::lock_guard<std::recursive_mutex> lock(gpuMutex_);
+        hr = presenter_.PresentFrame(d3d_.Context(), texture);
+        QueryPerformanceCounter(&now);
+    }
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+        RestartSelf();
+        return;
+    }
 
     ++statFrames_;
-    if (statWindowStart_ == 0) statWindowStart_ = t1.QuadPart;
-    const double windowMs = (t1.QuadPart - statWindowStart_) * qpcToMs_;
+    if (statWindowStart_ == 0) statWindowStart_ = now.QuadPart;
+    const double windowMs = (now.QuadPart - statWindowStart_) * qpcToMs_;
     if (windowMs >= 1000.0) {
         fps_ = static_cast<float>(statFrames_ * 1000.0 / windowMs);
         statFrames_ = 0;
-        statWindowStart_ = t1.QuadPart;
+        statWindowStart_ = now.QuadPart;
     }
+}
+
+void App::StartInterpolationThread() {
+    if (interpRun_) return;
+    newFrameEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    interpRun_ = true;
+    interpThread_ = std::thread([this] { InterpolationLoop(); });
+}
+
+void App::StopInterpolationThread() {
+    if (!interpRun_) return;
+    interpRun_ = false;
+    SetEvent(newFrameEvent_);
+    if (interpThread_.joinable()) interpThread_.join();
+    CloseHandle(newFrameEvent_);
+    newFrameEvent_ = nullptr;
+}
+
+void App::InterpolationLoop() {
+    // High-resolution waitable timer for the sub-frame sleep (Sleep() only
+    // has ~15ms granularity).
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr,
+                                          CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                          TIMER_ALL_ACCESS);
+
+    while (interpRun_) {
+        if (WaitForSingleObject(newFrameEvent_, 100) != WAIT_OBJECT_0) continue;
+        if (!interpRun_) break;
+        if (!PresenterShouldShow()) continue;
+
+        try {
+            // Blended midpoint first, then the real frame half an interval
+            // later — motion advances twice per captured frame.
+            ID3D11Texture2D* blend = nullptr;
+            ID3D11Texture2D* current = nullptr;
+            {
+                std::lock_guard<std::recursive_mutex> lock(gpuMutex_);
+                blend = pipeline_.BlendHistory(d3d_.Context(), 0.5f);
+                current = pipeline_.CurrentHistory();
+            }
+            PresentTexture(blend ? blend : current);
+            if (!blend) continue; // need 2 frames of history first
+
+            float halfMs = arrivalIntervalMs_ * 0.5f;
+            if (halfMs < 1.5f) halfMs = 1.5f;
+            if (halfMs > 25.0f) halfMs = 25.0f;
+            if (timer) {
+                LARGE_INTEGER due{};
+                due.QuadPart = -static_cast<LONGLONG>(halfMs * 10000.0f); // 100ns units
+                SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+                HANDLE waits[] = {newFrameEvent_, timer};
+                // A newer frame preempts the scheduled second present.
+                if (WaitForMultipleObjects(2, waits, FALSE, 50) == WAIT_OBJECT_0) {
+                    SetEvent(newFrameEvent_); // re-signal for the next loop turn
+                    continue;
+                }
+            }
+            if (!interpRun_) break;
+            {
+                std::lock_guard<std::recursive_mutex> lock(gpuMutex_);
+                current = pipeline_.CurrentHistory();
+            }
+            PresentTexture(current);
+        } catch (...) {
+            RestartSelf();
+            return;
+        }
+    }
+    if (timer) CloseHandle(timer);
 }
 
 gpu::ShaderPipeline::ProcessParams App::BuildProcessParams() {

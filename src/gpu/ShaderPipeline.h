@@ -50,6 +50,13 @@ public:
                              UINT viewportW, UINT viewportH, UINT outW, UINT outH,
                              const ProcessParams& params);
 
+    // Frame-interpolation history (Phase 6). PushHistory copies a processed
+    // frame into a 2-deep ring; BlendHistory returns lerp(prev, cur, t), or
+    // nullptr until two frames exist. CurrentHistory returns the newest copy.
+    void PushHistory(ID3D11DeviceContext* ctx, ID3D11Texture2D* processed);
+    ID3D11Texture2D* BlendHistory(ID3D11DeviceContext* ctx, float t);
+    ID3D11Texture2D* CurrentHistory() const;
+
 private:
     bool CompileCS(const std::wstring& path, winrt::com_ptr<ID3D11ComputeShader>& out,
                    std::wstring* error);
@@ -67,6 +74,7 @@ private:
     winrt::com_ptr<ID3D11ComputeShader> rcasCS_;
     winrt::com_ptr<ID3D11ComputeShader> blurCS_;
     winrt::com_ptr<ID3D11ComputeShader> brightCS_;
+    winrt::com_ptr<ID3D11ComputeShader> blendCS_;
     winrt::com_ptr<ID3D11ComputeShader> postCS_;
     winrt::com_ptr<ID3D11ComputeShader> passthroughCS_;
     winrt::com_ptr<ID3D11SamplerState> linearClamp_;
@@ -79,6 +87,7 @@ private:
     winrt::com_ptr<ID3D11Buffer> cbBlurXHalf_;
     winrt::com_ptr<ID3D11Buffer> cbBlurYHalf_;
     winrt::com_ptr<ID3D11Buffer> cbBright_;
+    winrt::com_ptr<ID3D11Buffer> cbBlend_;
     winrt::com_ptr<ID3D11Buffer> cbPost_;
     winrt::com_ptr<ID3D11Buffer> cbPassthrough_;
 
@@ -111,6 +120,13 @@ private:
     winrt::com_ptr<ID3D11Texture2D> bloom_;
     winrt::com_ptr<ID3D11UnorderedAccessView> bloomUAV_;
     winrt::com_ptr<ID3D11ShaderResourceView> bloomSRV_;
+    // interpolation history ring + blend output (lazily created)
+    winrt::com_ptr<ID3D11Texture2D> hist_[2];
+    winrt::com_ptr<ID3D11ShaderResourceView> histSRV_[2];
+    winrt::com_ptr<ID3D11Texture2D> blendOut_;
+    winrt::com_ptr<ID3D11UnorderedAccessView> blendOutUAV_;
+    int histNewest_ = 0;
+    int histCount_ = 0;
     UINT outW_ = 0, outH_ = 0;
 
     // WGC's frame pool cycles between a small fixed set of textures, so a

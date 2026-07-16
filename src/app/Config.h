@@ -9,6 +9,7 @@ struct Config {
     bool enabled = true;
     bool passthrough = false;    // debug: bilinear instead of FSR
     bool fitToMonitor = false;   // presenter covers the monitor (true upscale)
+    bool interpolation = false;  // frame doubling (adds ~half-frame latency)
 
     // Processing (neutral values disable the corresponding shader work)
     float sharpness = 0.25f;      // RCAS stops: 0 = max sharp, 2 = subtle

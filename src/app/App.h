@@ -1,8 +1,10 @@
 #pragma once
 
 #include <windows.h>
+#include <atomic>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "Config.h"
 #include "../capture/CaptureSession.h"
@@ -53,6 +55,17 @@ private:
 
     void UpdatePresenterVisibility();
     bool PresenterShouldShow() const;
+
+    // Presents a texture on the presenter (locks, counts stats, handles
+    // device-removed). Called from the frame worker and the interp thread.
+    void PresentTexture(ID3D11Texture2D* texture);
+
+    // Phase 6: paced present thread doubling perceived frame rate by
+    // inserting a blended frame between real ones (real frames delayed by
+    // half an interval).
+    void StartInterpolationThread();
+    void StopInterpolationThread();
+    void InterpolationLoop();
 
     // Device-lost recovery: every GPU object (capture session, swapchains,
     // ImGui backend) hangs off the dead device, so relaunch cleanly instead
@@ -105,6 +118,13 @@ private:
     // --test-rate accumulators
     UINT rateFrames_ = 0;
     LONGLONG rateStart_ = 0;
+
+    // interpolation thread state
+    std::thread interpThread_;
+    std::atomic<bool> interpRun_{false};
+    HANDLE newFrameEvent_ = nullptr;
+    std::atomic<float> arrivalIntervalMs_{11.1f};
+    LONGLONG lastArrivalQpc_ = 0;
 
     gpu::ShaderPipeline::ProcessParams BuildProcessParams();
 

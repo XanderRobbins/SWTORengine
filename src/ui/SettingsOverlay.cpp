@@ -184,6 +184,13 @@ void SettingsOverlay::Render(const Stats& stats) {
         changed |= ImGui::SliderFloat("Clarity (texture depth)", &config_->clarity, 0.0f, 1.0f);
     }
 
+    if (ImGui::CollapsingHeader("Motion", ImGuiTreeNodeFlags_DefaultOpen)) {
+        changed |= ImGui::Checkbox("Frame doubling (interpolation)", &config_->interpolation);
+        if (config_->interpolation) {
+            ImGui::TextDisabled("Adds ~half a frame of latency; mild ghosting on fast motion.");
+        }
+    }
+
     if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
         changed |= ImGui::SliderFloat("Bloom (light glow)", &config_->bloom, 0.0f, 1.0f);
         changed |= ImGui::SliderFloat("Bloom threshold (lower = more glows)",
