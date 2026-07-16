@@ -82,8 +82,13 @@ void CaptureSession::Stop() {
 
 void CaptureSession::OnFrameArrived(Direct3D11CaptureFramePool const& pool,
                                     winrt::Windows::Foundation::IInspectable const&) {
+    // Drain to the newest frame; processing stale ones would add latency that
+    // never recovers once we fall behind the game's present rate.
     auto frame = pool.TryGetNextFrame();
     if (!frame) return;
+    while (auto newer = pool.TryGetNextFrame()) {
+        frame = newer;
+    }
 
     const SizeInt32 contentSize = frame.ContentSize();
 

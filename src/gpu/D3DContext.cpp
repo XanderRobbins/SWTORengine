@@ -23,6 +23,13 @@ bool D3DContext::Init() {
     if (FAILED(hr)) return false;
 
     auto dxgiDevice = device_.as<IDXGIDevice>();
+
+    // Cap the present queue at 1 frame — the default (3) lets DXGI buffer up
+    // to two extra frames of latency between our Present and the display.
+    if (auto dxgiDevice1 = device_.try_as<IDXGIDevice1>()) {
+        dxgiDevice1->SetMaximumFrameLatency(1);
+    }
+
     winrtDevice_ = util::CreateDirect3DDevice(dxgiDevice.get());
     return true;
 }
