@@ -128,6 +128,8 @@ bool App::InitCore() {
     }
     if (!presenter_.Create(instance_, d3d_)) return false;
 
+    uiTheme_.LoadProfile(); // best effort; theme simply stays off if absent
+
     if (options_.testCaptureTarget.empty() && !options_.smokeTest) {
         if (!settings_.Init(instance_, d3d_, &config_)) return false;
         // Deferred to the main thread: restarting capture tears down the
@@ -192,6 +194,10 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             PostQuitMessage(exitCode_);
             return 0;
         case kTimerPoll:
+            if (config_.uiTheme) {
+                std::lock_guard<std::recursive_mutex> lock(gpuMutex_);
+                if (uiTheme_.MaybeReload()) themeW_ = 0; // relayout on next frame
+            }
             if (tracker_.IsAttached()) {
                 SyncPresenterRect();
                 // Window went fullscreen (or left it) — switch capture source.
@@ -359,9 +365,32 @@ void App::OnFrame(ID3D11Texture2D* frame, UINT contentW, UINT contentH) {
 
     try {
         std::lock_guard<std::recursive_mutex> lock(gpuMutex_);
-        ID3D11Texture2D* processed = pipeline_.Process(d3d_.Context(), frame, contentW,
-                                                       contentH, outW, outH,
-                                                       BuildProcessParams());
+
+        gpu::ShaderPipeline::ProcessParams params = BuildProcessParams();
+        std::vector<gpu::ShaderPipeline::ThemeRect> themeScaled;
+        if (config_.uiTheme && uiTheme_.Loaded()) {
+            if (contentW != themeW_ || contentH != themeH_) {
+                themeNative_.clear();
+                for (const auto& r : uiTheme_.ComputeRects(contentW, contentH)) {
+                    themeNative_.push_back({r.x, r.y, r.w, r.h, static_cast<float>(r.cols),
+                                            static_cast<float>(r.rows), r.cellW, r.cellH});
+                }
+                themeW_ = contentW;
+                themeH_ = contentH;
+            }
+            const float sx = static_cast<float>(outW) / contentW;
+            const float sy = static_cast<float>(outH) / contentH;
+            themeScaled.reserve(themeNative_.size());
+            for (const auto& r : themeNative_) {
+                themeScaled.push_back({r.x * sx, r.y * sy, r.w * sx, r.h * sy, r.cols, r.rows,
+                                       r.cellW * sx, r.cellH * sy});
+            }
+            params.theme = &themeScaled;
+            params.themeIntensity = config_.uiThemeIntensity;
+        }
+
+        ID3D11Texture2D* processed =
+            pipeline_.Process(d3d_.Context(), frame, contentW, contentH, outW, outH, params);
         if (!processed) return;
 
         if (config_.interpolation) {
@@ -629,8 +658,21 @@ void App::HandleTestCaptureFrame(ID3D11Texture2D* frame, UINT w, UINT h) {
 
     // Process at 1.5x to exercise a real EASU upscale, then dump.
     bool fsrOk = false;
-    ID3D11Texture2D* processed = pipeline_.Process(d3d_.Context(), frame, w, h, w * 3 / 2,
-                                                   h * 3 / 2, BuildProcessParams());
+    gpu::ShaderPipeline::ProcessParams params = BuildProcessParams();
+    std::vector<gpu::ShaderPipeline::ThemeRect> themeScaled;
+    if (config_.uiTheme && uiTheme_.Loaded()) {
+        for (const auto& r : uiTheme_.ComputeRects(w, h)) {
+            themeScaled.push_back({r.x * 1.5f, r.y * 1.5f, r.w * 1.5f, r.h * 1.5f,
+                                   static_cast<float>(r.cols), static_cast<float>(r.rows),
+                                   r.cellW * 1.5f, r.cellH * 1.5f});
+        }
+        if (!themeScaled.empty()) {
+            params.theme = &themeScaled;
+            params.themeIntensity = config_.uiThemeIntensity;
+        }
+    }
+    ID3D11Texture2D* processed =
+        pipeline_.Process(d3d_.Context(), frame, w, h, w * 3 / 2, h * 3 / 2, params);
     if (processed) {
         fsrOk = util::SaveTexturePng(d3d_.Device(), d3d_.Context(), processed,
                                      dir + L"capture_fsr.png");

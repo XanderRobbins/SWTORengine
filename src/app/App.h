@@ -15,6 +15,7 @@
 #include "../presenter/WindowTracker.h"
 #include "../ui/HotkeyManager.h"
 #include "../ui/SettingsOverlay.h"
+#include "../ui/UiTheme.h"
 
 namespace app {
 
@@ -88,6 +89,9 @@ private:
     presenter::PresenterWindow presenter_;
     ui::SettingsOverlay settings_;
     ui::HotkeyManager hotkeys_;
+    ui::UiTheme uiTheme_;
+    std::vector<gpu::ShaderPipeline::ThemeRect> themeNative_; // game-pixel space
+    UINT themeW_ = 0, themeH_ = 0; // content size themeNative_ was computed for
 
     HWND msgWindow_ = nullptr;
     std::wstring targetTitleLive_;

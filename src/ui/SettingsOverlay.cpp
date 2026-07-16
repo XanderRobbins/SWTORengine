@@ -184,6 +184,14 @@ void SettingsOverlay::Render(const Stats& stats) {
         changed |= ImGui::SliderFloat("Clarity (texture depth)", &config_->clarity, 0.0f, 1.0f);
     }
 
+    if (ImGui::CollapsingHeader("UI Theme", ImGuiTreeNodeFlags_DefaultOpen)) {
+        changed |= ImGui::Checkbox("Themed frames around action bars", &config_->uiTheme);
+        if (config_->uiTheme) {
+            changed |= ImGui::SliderFloat("Theme intensity", &config_->uiThemeIntensity,
+                                          0.0f, 1.0f);
+        }
+    }
+
     if (ImGui::CollapsingHeader("Motion", ImGuiTreeNodeFlags_DefaultOpen)) {
         changed |= ImGui::Checkbox("Frame doubling (interpolation)", &config_->interpolation);
         if (config_->interpolation) {

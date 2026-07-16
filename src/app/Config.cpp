@@ -48,6 +48,8 @@ Config Config::Load() {
         config.passthrough = j.value("passthrough", config.passthrough);
         config.fitToMonitor = j.value("fitToMonitor", config.fitToMonitor);
         config.interpolation = j.value("interpolation", config.interpolation);
+        config.uiTheme = j.value("uiTheme", config.uiTheme);
+        config.uiThemeIntensity = j.value("uiThemeIntensity", config.uiThemeIntensity);
         config.fxaa = j.value("fxaa", config.fxaa);
         config.fxaaTextProtect = j.value("fxaaTextProtect", config.fxaaTextProtect);
         config.debandStrength = j.value("debandStrength", config.debandStrength);
@@ -76,6 +78,8 @@ void Config::Save() const {
         {"passthrough", passthrough},
         {"fitToMonitor", fitToMonitor},
         {"interpolation", interpolation},
+        {"uiTheme", uiTheme},
+        {"uiThemeIntensity", uiThemeIntensity},
         {"fxaa", fxaa},
         {"fxaaTextProtect", fxaaTextProtect},
         {"debandStrength", debandStrength},

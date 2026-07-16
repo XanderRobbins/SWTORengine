@@ -28,6 +28,7 @@ add_executable(chimera WIN32
     src/presenter/WindowTracker.cpp
     src/ui/SettingsOverlay.cpp
     src/ui/HotkeyManager.cpp
+    src/ui/UiTheme.cpp
     src/util/PngDump.cpp
 )
 

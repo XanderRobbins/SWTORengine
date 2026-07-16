@@ -47,6 +47,12 @@ struct BlendConstants {
     float outW, outH;
 };
 
+struct ThemeConstants {
+    float outW, outH, rectCount, intensity;
+    float rects[16][4];
+    float grids[16][4];
+};
+
 struct PostConstants {
     float vibrance, saturation, contrast, gamma;
     float exposure, filmic, vignette, grain;
@@ -102,6 +108,7 @@ bool ShaderPipeline::Init(ID3D11Device* device, const std::wstring& shaderDir,
     if (!CompileCS(shaderDir + L"clarity_blur.hlsl", blurCS_, error)) return false;
     if (!CompileCS(shaderDir + L"bright_pass.hlsl", brightCS_, error)) return false;
     if (!CompileCS(shaderDir + L"frame_blend.hlsl", blendCS_, error)) return false;
+    if (!CompileCS(shaderDir + L"ui_theme.hlsl", themeCS_, error)) return false;
     if (!CompileCS(shaderDir + L"post_grade.hlsl", postCS_, error)) return false;
     if (!CompileCS(shaderDir + L"passthrough.hlsl", passthroughCS_, error)) return false;
 
@@ -121,6 +128,7 @@ bool ShaderPipeline::Init(ID3D11Device* device, const std::wstring& shaderDir,
     cbBlurYHalf_ = MakeConstantBuffer(device_.get(), sizeof(BlurConstants));
     cbBright_ = MakeConstantBuffer(device_.get(), sizeof(BrightConstants));
     cbBlend_ = MakeConstantBuffer(device_.get(), sizeof(BlendConstants));
+    cbTheme_ = MakeConstantBuffer(device_.get(), sizeof(ThemeConstants));
     cbPost_ = MakeConstantBuffer(device_.get(), sizeof(PostConstants));
     cbPassthrough_ = MakeConstantBuffer(device_.get(), sizeof(PassthroughConstants));
     return cbFxaa_ && cbEasu_ && cbRcas_ && cbBlurX_ && cbBlurY_ && cbBlurXHalf_ &&
@@ -163,7 +171,8 @@ bool ShaderPipeline::EnsureOutputTextures(UINT outW, UINT outH) {
 
     mid_ = nullptr; midUAV_ = nullptr; midSRV_ = nullptr;
     out_ = nullptr; outUAV_ = nullptr; outSRV_ = nullptr;
-    post_ = nullptr; postUAV_ = nullptr;
+    post_ = nullptr; postUAV_ = nullptr; postSRV_ = nullptr;
+    themed_ = nullptr; themedUAV_ = nullptr;
     blurTmp_ = nullptr; blurTmpUAV_ = nullptr; blurTmpSRV_ = nullptr;
     blur_ = nullptr; blurUAV_ = nullptr; blurSRV_ = nullptr;
     bloomTmp_ = nullptr; bloomTmpUAV_ = nullptr; bloomTmpSRV_ = nullptr;
@@ -176,7 +185,7 @@ bool ShaderPipeline::EnsureOutputTextures(UINT outW, UINT outH) {
 
     if (!MakeUAVTexture(device_.get(), outW, outH, mid_, &midUAV_, &midSRV_)) return false;
     if (!MakeUAVTexture(device_.get(), outW, outH, out_, &outUAV_, &outSRV_)) return false;
-    if (!MakeUAVTexture(device_.get(), outW, outH, post_, &postUAV_, nullptr)) return false;
+    if (!MakeUAVTexture(device_.get(), outW, outH, post_, &postUAV_, &postSRV_)) return false;
 
     outW_ = outW;
     outH_ = outH;
@@ -334,8 +343,36 @@ ID3D11Texture2D* ShaderPipeline::Process(ID3D11DeviceContext* ctx, ID3D11Texture
     ctx->UpdateSubresource(cbRcas_.get(), 0, nullptr, &rcas, 0, 0);
     DispatchPass(ctx, rcasCS_.get(), cbRcas_.get(), rcasInput, outUAV_.get(), groupsX, groupsY);
 
+    // UI theme frames composite onto whichever texture ends the chain.
+    auto applyTheme = [&](ID3D11Texture2D* tex,
+                          ID3D11ShaderResourceView* srv) -> ID3D11Texture2D* {
+        if (!params.theme || params.theme->empty() || params.themeIntensity <= 0.0f) return tex;
+        if (!themed_ &&
+            !MakeUAVTexture(device_.get(), outW, outH, themed_, &themedUAV_, nullptr)) {
+            return tex;
+        }
+        ThemeConstants tc{};
+        tc.outW = static_cast<float>(outW);
+        tc.outH = static_cast<float>(outH);
+        tc.intensity = params.themeIntensity;
+        int n = 0;
+        for (const ThemeRect& r : *params.theme) {
+            if (n >= 16) break;
+            tc.rects[n][0] = r.x; tc.rects[n][1] = r.y;
+            tc.rects[n][2] = r.w; tc.rects[n][3] = r.h;
+            tc.grids[n][0] = r.cols; tc.grids[n][1] = r.rows;
+            tc.grids[n][2] = r.cellW; tc.grids[n][3] = r.cellH;
+            ++n;
+        }
+        tc.rectCount = static_cast<float>(n);
+        ctx->UpdateSubresource(cbTheme_.get(), 0, nullptr, &tc, 0, 0);
+        DispatchPass(ctx, themeCS_.get(), cbTheme_.get(), srv, themedUAV_.get(),
+                     (outW + 7) / 8, (outH + 7) / 8);
+        return themed_.get();
+    };
+
     // --- Deband + clarity + color grade (skipped entirely when neutral) ---
-    if (!params.PostPassNeeded()) return out_.get();
+    if (!params.PostPassNeeded()) return applyTheme(out_.get(), outSRV_.get());
 
     const UINT halfW = (outW + 1) / 2;
     const UINT halfH = (outH + 1) / 2;
@@ -430,7 +467,7 @@ ID3D11Texture2D* ShaderPipeline::Process(ID3D11DeviceContext* ctx, ID3D11Texture
         ctx->CSSetShaderResources(0, 3, nullSRV);
         ctx->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
     }
-    return post_.get();
+    return applyTheme(post_.get(), postSRV_.get());
 }
 
 } // namespace gpu

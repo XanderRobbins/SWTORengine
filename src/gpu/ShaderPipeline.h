@@ -3,6 +3,7 @@
 #include <winrt/base.h>
 #include <d3d11.h>
 #include <string>
+#include <vector>
 
 namespace gpu {
 
@@ -14,6 +15,12 @@ namespace gpu {
 class ShaderPipeline {
 public:
     enum class Mode { FSR, Passthrough };
+
+    // Themed frame around a UI element, in OUTPUT pixel space.
+    struct ThemeRect {
+        float x, y, w, h;
+        float cols, rows, cellW, cellH; // slot grid; cols 0 = frame only
+    };
 
     struct ProcessParams {
         Mode mode = Mode::FSR;
@@ -33,6 +40,8 @@ public:
         float bloom = 0.0f;          // 0 neutral, glow strength
         float bloomThreshold = 0.7f; // luma where glow starts
         UINT frameIndex = 0;         // animates grain/deband jitter
+        const std::vector<ThemeRect>* theme = nullptr; // UI theme frames
+        float themeIntensity = 0.8f;
 
         bool PostPassNeeded() const {
             return debandStrength > 0.0f || vibrance != 0.0f || saturation != 1.0f ||
@@ -75,6 +84,7 @@ private:
     winrt::com_ptr<ID3D11ComputeShader> blurCS_;
     winrt::com_ptr<ID3D11ComputeShader> brightCS_;
     winrt::com_ptr<ID3D11ComputeShader> blendCS_;
+    winrt::com_ptr<ID3D11ComputeShader> themeCS_;
     winrt::com_ptr<ID3D11ComputeShader> postCS_;
     winrt::com_ptr<ID3D11ComputeShader> passthroughCS_;
     winrt::com_ptr<ID3D11SamplerState> linearClamp_;
@@ -88,6 +98,7 @@ private:
     winrt::com_ptr<ID3D11Buffer> cbBlurYHalf_;
     winrt::com_ptr<ID3D11Buffer> cbBright_;
     winrt::com_ptr<ID3D11Buffer> cbBlend_;
+    winrt::com_ptr<ID3D11Buffer> cbTheme_;
     winrt::com_ptr<ID3D11Buffer> cbPost_;
     winrt::com_ptr<ID3D11Buffer> cbPassthrough_;
 
@@ -106,6 +117,9 @@ private:
     winrt::com_ptr<ID3D11ShaderResourceView> outSRV_;
     winrt::com_ptr<ID3D11Texture2D> post_;
     winrt::com_ptr<ID3D11UnorderedAccessView> postUAV_;
+    winrt::com_ptr<ID3D11ShaderResourceView> postSRV_;
+    winrt::com_ptr<ID3D11Texture2D> themed_;
+    winrt::com_ptr<ID3D11UnorderedAccessView> themedUAV_;
     // clarity blur ping-pong (lazily created on first use)
     winrt::com_ptr<ID3D11Texture2D> blurTmp_;
     winrt::com_ptr<ID3D11UnorderedAccessView> blurTmpUAV_;
