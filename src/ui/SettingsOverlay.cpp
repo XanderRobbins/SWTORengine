@@ -179,6 +179,12 @@ void SettingsOverlay::Render(const Stats& stats) {
         changed |= ImGui::SliderFloat("Clarity (texture depth)", &config_->clarity, 0.0f, 1.0f);
     }
 
+    if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+        changed |= ImGui::SliderFloat("Bloom (light glow)", &config_->bloom, 0.0f, 1.0f);
+        changed |= ImGui::SliderFloat("Bloom threshold (lower = more glows)",
+                                      &config_->bloomThreshold, 0.4f, 0.95f);
+    }
+
     if (ImGui::CollapsingHeader("Color", ImGuiTreeNodeFlags_DefaultOpen)) {
         changed |= ImGui::SliderFloat("Vibrance", &config_->vibrance, -1.0f, 1.0f);
         changed |= ImGui::SliderFloat("Saturation", &config_->saturation, 0.0f, 2.0f);

@@ -16,6 +16,8 @@ struct Config {
     float fxaaTextProtect = 0.75f; // 0..1, keep UI text crisp under FXAA
     float debandStrength = 1.0f;   // 0 = off
     float clarity = 0.35f;         // 0..1 local contrast ("texture depth")
+    float bloom = 0.25f;           // 0..1 glow strength
+    float bloomThreshold = 0.7f;   // luma where glow starts
     float vibrance = 0.15f;       // -1..1
     float saturation = 1.0f;      // 1 = neutral
     float contrast = 1.0f;        // 1 = neutral

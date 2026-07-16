@@ -5,7 +5,9 @@
 // Grain/vignette are last so the sharpener never amplifies them.
 
 Texture2D InputTexture : register(t0);
-Texture2D BlurTexture : register(t1); // wide Gaussian of the input (for clarity)
+Texture2D BlurTexture : register(t1);  // wide Gaussian of the input (for clarity)
+Texture2D BloomTexture : register(t2); // half-res blurred bright-pass
+SamplerState LinearSampler : register(s0);
 RWTexture2D<float4> OutputTexture : register(u0);
 
 cbuffer PostConstants : register(b0) {
@@ -21,7 +23,8 @@ cbuffer PostConstants : register(b0) {
     float FrameIndex;     // animates grain/deband jitter
     float2 OutSize;
     float Clarity;        // 0..1 local contrast (mid-frequency "depth")
-    float3 _pad;
+    float Bloom;          // 0..1 additive glow strength
+    float2 _pad;
 };
 
 static const float3 kLuma = float3(0.299, 0.587, 0.114);
@@ -76,6 +79,12 @@ void mainCS(uint3 id : SV_DispatchThreadID) {
         delta = delta / (1.0 + 3.0 * abs(delta));
         const float boosted = max(lumaC + Clarity * delta, 0.0);
         c *= boosted / max(lumaC, 1e-3);
+    }
+
+    // --- Bloom: add the blurred bright-pass back (light bleeds outward) ---
+    if (Bloom > 0.0) {
+        const float2 uv = (float2(pos) + 0.5) / OutSize;
+        c += BloomTexture.SampleLevel(LinearSampler, uv, 0).rgb * Bloom;
     }
 
     // --- Color grade ---

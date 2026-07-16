@@ -307,6 +307,8 @@ gpu::ShaderPipeline::ProcessParams App::BuildProcessParams() {
     params.fxaaTextProtect = config_.fxaaTextProtect;
     params.debandStrength = config_.debandStrength;
     params.clarity = config_.clarity;
+    params.bloom = config_.bloom;
+    params.bloomThreshold = config_.bloomThreshold;
     params.vibrance = config_.vibrance;
     params.saturation = config_.saturation;
     params.contrast = config_.contrast;

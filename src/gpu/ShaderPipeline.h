@@ -30,12 +30,14 @@ public:
         float vignette = 0.0f;       // 0 neutral
         float grain = 0.0f;          // 0 neutral
         float clarity = 0.0f;        // 0 neutral, local contrast ("depth")
+        float bloom = 0.0f;          // 0 neutral, glow strength
+        float bloomThreshold = 0.7f; // luma where glow starts
         UINT frameIndex = 0;         // animates grain/deband jitter
 
         bool PostPassNeeded() const {
             return debandStrength > 0.0f || vibrance != 0.0f || saturation != 1.0f ||
                    contrast != 1.0f || gamma != 1.0f || exposure != 0.0f || filmic != 0.0f ||
-                   vignette != 0.0f || grain != 0.0f || clarity > 0.0f;
+                   vignette != 0.0f || grain != 0.0f || clarity > 0.0f || bloom > 0.0f;
         }
     };
 
@@ -64,6 +66,7 @@ private:
     winrt::com_ptr<ID3D11ComputeShader> easuCS_;
     winrt::com_ptr<ID3D11ComputeShader> rcasCS_;
     winrt::com_ptr<ID3D11ComputeShader> blurCS_;
+    winrt::com_ptr<ID3D11ComputeShader> brightCS_;
     winrt::com_ptr<ID3D11ComputeShader> postCS_;
     winrt::com_ptr<ID3D11ComputeShader> passthroughCS_;
     winrt::com_ptr<ID3D11SamplerState> linearClamp_;
@@ -73,6 +76,9 @@ private:
     winrt::com_ptr<ID3D11Buffer> cbRcas_;
     winrt::com_ptr<ID3D11Buffer> cbBlurX_;
     winrt::com_ptr<ID3D11Buffer> cbBlurY_;
+    winrt::com_ptr<ID3D11Buffer> cbBlurXHalf_;
+    winrt::com_ptr<ID3D11Buffer> cbBlurYHalf_;
+    winrt::com_ptr<ID3D11Buffer> cbBright_;
     winrt::com_ptr<ID3D11Buffer> cbPost_;
     winrt::com_ptr<ID3D11Buffer> cbPassthrough_;
 
@@ -98,6 +104,13 @@ private:
     winrt::com_ptr<ID3D11Texture2D> blur_;
     winrt::com_ptr<ID3D11UnorderedAccessView> blurUAV_;
     winrt::com_ptr<ID3D11ShaderResourceView> blurSRV_;
+    // bloom chain at half res (lazily created on first use)
+    winrt::com_ptr<ID3D11Texture2D> bloomTmp_;
+    winrt::com_ptr<ID3D11UnorderedAccessView> bloomTmpUAV_;
+    winrt::com_ptr<ID3D11ShaderResourceView> bloomTmpSRV_;
+    winrt::com_ptr<ID3D11Texture2D> bloom_;
+    winrt::com_ptr<ID3D11UnorderedAccessView> bloomUAV_;
+    winrt::com_ptr<ID3D11ShaderResourceView> bloomSRV_;
     UINT outW_ = 0, outH_ = 0;
 
     // WGC's frame pool cycles between a small fixed set of textures, so a

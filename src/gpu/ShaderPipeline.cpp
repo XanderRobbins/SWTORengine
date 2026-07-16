@@ -37,11 +37,16 @@ struct BlurConstants {
     float outW, outH;
 };
 
+struct BrightConstants {
+    float threshold, knee;
+    float halfW, halfH;
+};
+
 struct PostConstants {
     float vibrance, saturation, contrast, gamma;
     float exposure, filmic, vignette, grain;
     float debandStrength, frameIndex, outW, outH;
-    float clarity, pad0, pad1, pad2;
+    float clarity, bloom, pad0, pad1;
 };
 
 struct PassthroughConstants {
@@ -90,6 +95,7 @@ bool ShaderPipeline::Init(ID3D11Device* device, const std::wstring& shaderDir,
     if (!CompileCS(shaderDir + L"fsr1_easu.hlsl", easuCS_, error)) return false;
     if (!CompileCS(shaderDir + L"fsr1_rcas.hlsl", rcasCS_, error)) return false;
     if (!CompileCS(shaderDir + L"clarity_blur.hlsl", blurCS_, error)) return false;
+    if (!CompileCS(shaderDir + L"bright_pass.hlsl", brightCS_, error)) return false;
     if (!CompileCS(shaderDir + L"post_grade.hlsl", postCS_, error)) return false;
     if (!CompileCS(shaderDir + L"passthrough.hlsl", passthroughCS_, error)) return false;
 
@@ -105,9 +111,13 @@ bool ShaderPipeline::Init(ID3D11Device* device, const std::wstring& shaderDir,
     cbRcas_ = MakeConstantBuffer(device_.get(), sizeof(RcasConstants));
     cbBlurX_ = MakeConstantBuffer(device_.get(), sizeof(BlurConstants));
     cbBlurY_ = MakeConstantBuffer(device_.get(), sizeof(BlurConstants));
+    cbBlurXHalf_ = MakeConstantBuffer(device_.get(), sizeof(BlurConstants));
+    cbBlurYHalf_ = MakeConstantBuffer(device_.get(), sizeof(BlurConstants));
+    cbBright_ = MakeConstantBuffer(device_.get(), sizeof(BrightConstants));
     cbPost_ = MakeConstantBuffer(device_.get(), sizeof(PostConstants));
     cbPassthrough_ = MakeConstantBuffer(device_.get(), sizeof(PassthroughConstants));
-    return cbFxaa_ && cbEasu_ && cbRcas_ && cbBlurX_ && cbBlurY_ && cbPost_ && cbPassthrough_;
+    return cbFxaa_ && cbEasu_ && cbRcas_ && cbBlurX_ && cbBlurY_ && cbBlurXHalf_ &&
+           cbBlurYHalf_ && cbBright_ && cbPost_ && cbPassthrough_;
 }
 
 bool ShaderPipeline::CompileCS(const std::wstring& path,
@@ -149,6 +159,8 @@ bool ShaderPipeline::EnsureOutputTextures(UINT outW, UINT outH) {
     post_ = nullptr; postUAV_ = nullptr;
     blurTmp_ = nullptr; blurTmpUAV_ = nullptr; blurTmpSRV_ = nullptr;
     blur_ = nullptr; blurUAV_ = nullptr; blurSRV_ = nullptr;
+    bloomTmp_ = nullptr; bloomTmpUAV_ = nullptr; bloomTmpSRV_ = nullptr;
+    bloom_ = nullptr; bloomUAV_ = nullptr; bloomSRV_ = nullptr;
 
     if (!MakeUAVTexture(device_.get(), outW, outH, mid_, &midUAV_, &midSRV_)) return false;
     if (!MakeUAVTexture(device_.get(), outW, outH, out_, &outUAV_, &outSRV_)) return false;
@@ -272,27 +284,63 @@ ID3D11Texture2D* ShaderPipeline::Process(ID3D11DeviceContext* ctx, ID3D11Texture
         claritySRV = blurSRV_.get();
     }
 
+    // Bloom: bright-pass into half res, then a double separable blur for a
+    // wide glow (effective radius ~16px at full res), all at quarter cost.
+    ID3D11ShaderResourceView* bloomSRV = outSRV_.get(); // ignored when bloom == 0
+    if (params.bloom > 0.0f) {
+        const UINT halfW = (outW + 1) / 2;
+        const UINT halfH = (outH + 1) / 2;
+        if (!bloom_) {
+            if (!MakeUAVTexture(device_.get(), halfW, halfH, bloomTmp_, &bloomTmpUAV_,
+                                &bloomTmpSRV_))
+                return nullptr;
+            if (!MakeUAVTexture(device_.get(), halfW, halfH, bloom_, &bloomUAV_, &bloomSRV_))
+                return nullptr;
+        }
+        BrightConstants bc{params.bloomThreshold, 0.2f, static_cast<float>(halfW),
+                           static_cast<float>(halfH)};
+        ctx->UpdateSubresource(cbBright_.get(), 0, nullptr, &bc, 0, 0);
+        BlurConstants bx{1.0f, 0.0f, static_cast<float>(halfW), static_cast<float>(halfH)};
+        BlurConstants by{0.0f, 1.0f, static_cast<float>(halfW), static_cast<float>(halfH)};
+        ctx->UpdateSubresource(cbBlurXHalf_.get(), 0, nullptr, &bx, 0, 0);
+        ctx->UpdateSubresource(cbBlurYHalf_.get(), 0, nullptr, &by, 0, 0);
+
+        const UINT gx = (halfW + 7) / 8;
+        const UINT gy = (halfH + 7) / 8;
+        DispatchPass(ctx, brightCS_.get(), cbBright_.get(), outSRV_.get(), bloomUAV_.get(), gx,
+                     gy);
+        DispatchPass(ctx, blurCS_.get(), cbBlurXHalf_.get(), bloomSRV_.get(), bloomTmpUAV_.get(),
+                     gx, gy);
+        DispatchPass(ctx, blurCS_.get(), cbBlurYHalf_.get(), bloomTmpSRV_.get(), bloomUAV_.get(),
+                     gx, gy);
+        DispatchPass(ctx, blurCS_.get(), cbBlurXHalf_.get(), bloomSRV_.get(), bloomTmpUAV_.get(),
+                     gx, gy);
+        DispatchPass(ctx, blurCS_.get(), cbBlurYHalf_.get(), bloomTmpSRV_.get(), bloomUAV_.get(),
+                     gx, gy);
+        bloomSRV = bloomSRV_.get();
+    }
+
     PostConstants post{params.vibrance,       params.saturation,
                        params.contrast,       params.gamma,
                        params.exposure,       params.filmic,
                        params.vignette,       params.grain,
                        params.debandStrength, static_cast<float>(params.frameIndex % 1024),
                        static_cast<float>(outW), static_cast<float>(outH),
-                       params.clarity,        0.0f, 0.0f, 0.0f};
+                       params.clarity,        params.bloom, 0.0f, 0.0f};
     ctx->UpdateSubresource(cbPost_.get(), 0, nullptr, &post, 0, 0);
 
     {
         ID3D11Buffer* cbs[] = {cbPost_.get()};
-        ID3D11ShaderResourceView* srvs[] = {outSRV_.get(), claritySRV};
+        ID3D11ShaderResourceView* srvs[] = {outSRV_.get(), claritySRV, bloomSRV};
         ID3D11UnorderedAccessView* uavs[] = {postUAV_.get()};
-        ID3D11ShaderResourceView* nullSRV[] = {nullptr, nullptr};
+        ID3D11ShaderResourceView* nullSRV[] = {nullptr, nullptr, nullptr};
         ID3D11UnorderedAccessView* nullUAV[] = {nullptr};
         ctx->CSSetShader(postCS_.get(), nullptr, 0);
         ctx->CSSetConstantBuffers(0, 1, cbs);
-        ctx->CSSetShaderResources(0, 2, srvs);
+        ctx->CSSetShaderResources(0, 3, srvs);
         ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
         ctx->Dispatch((outW + 7) / 8, (outH + 7) / 8, 1);
-        ctx->CSSetShaderResources(0, 2, nullSRV);
+        ctx->CSSetShaderResources(0, 3, nullSRV);
         ctx->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
     }
     return post_.get();
