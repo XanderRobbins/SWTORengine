@@ -660,7 +660,13 @@ void App::HandleTestCaptureFrame(ID3D11Texture2D* frame, UINT w, UINT h) {
     bool fsrOk = false;
     gpu::ShaderPipeline::ProcessParams params = BuildProcessParams();
     std::vector<gpu::ShaderPipeline::ThemeRect> themeScaled;
+    wprintf(L"test-capture: uiTheme cfg=%d loaded=%d\n", config_.uiTheme ? 1 : 0,
+            uiTheme_.Loaded() ? 1 : 0);
     if (config_.uiTheme && uiTheme_.Loaded()) {
+        for (const auto& r : uiTheme_.ComputeRects(w, h)) {
+            wprintf(L"test-capture: theme rect (%.0f,%.0f %.0fx%.0f) grid %dx%d cell %.1f\n",
+                    r.x, r.y, r.w, r.h, r.cols, r.rows, r.cellW);
+        }
         for (const auto& r : uiTheme_.ComputeRects(w, h)) {
             themeScaled.push_back({r.x * 1.5f, r.y * 1.5f, r.w * 1.5f, r.h * 1.5f,
                                    static_cast<float>(r.cols), static_cast<float>(r.rows),

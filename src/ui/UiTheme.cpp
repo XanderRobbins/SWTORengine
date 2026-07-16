@@ -9,9 +9,10 @@ namespace ui {
 
 namespace {
 
-// SWTOR quickslot base size in UI units (scaled by element scale and
-// GlobalScale). Calibrated against a live 2560x1600 capture.
-constexpr float kCellBase = 52.0f;
+// SWTOR quickslot pitch in UI units (slot + spacing, scaled by element scale
+// and GlobalScale). Solved from live scanline measurements of two bars at
+// different scales: pitch(0.95) = 65.7px, pitch(1.0) = 69.0px at G = 1.3.
+constexpr float kCellBase = 53.1f;
 
 std::wstring ProfilesDir() {
     wchar_t path[MAX_PATH]{};
@@ -114,6 +115,9 @@ std::vector<UiTheme::BarRect> UiTheme::ComputeRects(unsigned gameW, unsigned gam
     const float G = globalScale_;
     for (const Bar& bar : bars_) {
         const float cell = kCellBase * bar.scale * G;
+        // Bars center on their VISIBLE slot span (verified by scanline
+        // measurement: a 6-of-12 bar occupies exactly 6 cells around its
+        // anchor).
         const int cols = bar.numVisible < bar.numPerRow ? bar.numVisible : bar.numPerRow;
         const int rows = (bar.numVisible + bar.numPerRow - 1) / bar.numPerRow;
         const float w = cols * cell;
@@ -136,6 +140,10 @@ std::vector<UiTheme::BarRect> UiTheme::ComputeRects(unsigned gameW, unsigned gam
             break;
         case 2: // bottom-left
             rect.x = ax;
+            rect.y = gameH + ay - h;
+            break;
+        case 5: // bottom-right
+            rect.x = gameW + ax - w;
             rect.y = gameH + ay - h;
             break;
         default:
